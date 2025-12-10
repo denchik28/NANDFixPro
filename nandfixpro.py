@@ -835,7 +835,7 @@ class ConsoleTypeDialog(tk.Toplevel):
 class SwitchGuiApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.version = "2.1"
+        self.version = "2.1.0"
         self.title(f"NAND Fix Pro v{self.version}")
         self.geometry("650x750") # Increased height to accommodate offline mode file selectors
         self.resizable(False, False)
