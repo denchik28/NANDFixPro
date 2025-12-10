@@ -30,5 +30,7 @@ config.ini
 *.zip
 
 installation.ini
+.claude/
+
 
 

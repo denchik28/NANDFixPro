@@ -835,9 +835,9 @@ class ConsoleTypeDialog(tk.Toplevel):
 class SwitchGuiApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.version = "2.0.4"
+        self.version = "2.1"
         self.title(f"NAND Fix Pro v{self.version}")
-        self.geometry("650x700") # Changed height for a better fit
+        self.geometry("650x750") # Increased height to accommodate offline mode file selectors
         self.resizable(False, False)
         
         # --- PATHS & STATE VARIABLES ---
@@ -847,12 +847,24 @@ class SwitchGuiApp(tk.Tk):
             "nxnandmanager": tk.StringVar(), "keys": tk.StringVar(), "firmware": tk.StringVar(),
             "prodinfo": tk.StringVar(), "partitions_folder": tk.StringVar(),
             "output_folder": tk.StringVar(), "emmchaccgen": tk.StringVar(),
-            "temp_directory": tk.StringVar(),
+            "temp_directory": tk.StringVar(), "rawnand": tk.StringVar(),
+            "output_l3": tk.StringVar(),  # Level 3 offline output folder
         }
+        
+        # Offline mode toggle
+        self.offline_mode = tk.BooleanVar(value=False)
+        
         self.level_requirements = {
             1: ["firmware", "7z", "emmchaccgen", "nxnandmanager", "osfmount"],
             2: ["firmware", "7z", "emmchaccgen", "nxnandmanager", "osfmount", "partitions_folder"],
             3: ["firmware", "prodinfo", "7z", "emmchaccgen", "nxnandmanager", "osfmount", "partitions_folder"]
+        }
+        
+        # Offline mode requirements (no osfmount needed)
+        self.level_requirements_offline = {
+            1: ["firmware", "7z", "emmchaccgen", "nxnandmanager", "rawnand", "keys"],
+            2: ["firmware", "7z", "emmchaccgen", "nxnandmanager", "rawnand", "keys", "partitions_folder"],
+            3: ["firmware", "prodinfo", "7z", "emmchaccgen", "nxnandmanager", "keys", "partitions_folder", "output_l3"]
         }
         self.start_level1_button, self.start_level2_button, self.start_level3_button = None, None, None
 
@@ -877,6 +889,9 @@ class SwitchGuiApp(tk.Tk):
         # Console type override variables
         self.override_console_type = tk.BooleanVar(value=False)
         self.manual_console_type = tk.StringVar(value="")
+        
+        # Track offline mode UI elements
+        self.offline_mode_widgets = []
 
         # --- INITIALIZATION ---
         self._setup_styles()
@@ -888,32 +903,37 @@ class SwitchGuiApp(tk.Tk):
         # Set up cleanup on exit
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
         
-    def _create_main_button_row(self, parent_frame, process_name, command, button_ref):
-        """Creates the consistent row of three main buttons for each tab."""
+    def _create_main_button_row(self, parent_frame, process_name, command, button_ref, level=None):
+        """Creates the consistent row of main buttons for each tab."""
         button_frame = ttk.Frame(parent_frame)
 
-        # Get Keys button (left)
-        get_keys_button = ttk.Button(button_frame, text="Get Keys from SD",
-                                     command=self._get_keys_from_sd, style="Active.TButton")
-        get_keys_button.pack(side=tk.LEFT, padx=10, ipady=5, ipadx=15)
-        self.get_keys_buttons.append(get_keys_button)
+        # Get Keys button (left) - Only in ONLINE mode
+        if not self.offline_mode.get():
+            get_keys_button = ttk.Button(button_frame, text="Get Keys from SD",
+                                         command=self._get_keys_from_sd, style="Active.TButton")
+            get_keys_button.pack(side=tk.LEFT, padx=10, ipady=5, ipadx=15)
+            self.get_keys_buttons.append(get_keys_button)
 
-        # Main process button (center)
+        # Main process button (center/left depending on mode)
         button = ttk.Button(button_frame, text=f"Start {process_name} Process",
                             command=command, style="Disabled.TButton", state="disabled")
         button.pack(side=tk.LEFT, padx=10, ipady=5, ipadx=15)
         setattr(self, button_ref, button)
 
-        # Copy BOOT files button (right)
-        copy_boot_button = ttk.Button(button_frame, text="Copy BOOT to SD",
-                                      command=self._copy_boot_files_to_sd, style="Disabled.TButton", state="disabled")
-        copy_boot_button.pack(side=tk.LEFT, padx=10, ipady=5, ipadx=15)
-        
-        # --- THIS IS THE FIX ---
-        # Add the newly created button to the list so it can be updated later
-        self.copy_boot_buttons.append(copy_boot_button)
-        # --- END OF FIX ---
-        
+        # Advanced USER fix button (Level 2 only, next to main button)
+        if level == 2:
+            advanced_user_button = ttk.Button(button_frame, text="Advanced: Fix USER Only",
+                                             command=self._start_user_fix_threaded, style="Disabled.TButton", state="disabled")
+            advanced_user_button.pack(side=tk.LEFT, padx=10, ipady=5, ipadx=15)
+            self.advanced_user_button = advanced_user_button
+
+        # Copy BOOT files button (right) - Only in ONLINE mode
+        if not self.offline_mode.get():
+            copy_boot_button = ttk.Button(button_frame, text="Copy BOOT to SD",
+                                          command=self._copy_boot_files_to_sd, style="Disabled.TButton", state="disabled")
+            copy_boot_button.pack(side=tk.LEFT, padx=10, ipady=5, ipadx=15)
+            self.copy_boot_buttons.append(copy_boot_button)
+
         return button_frame
         
     # In class SwitchGuiApp:
@@ -1285,7 +1305,7 @@ class SwitchGuiApp(tk.Tk):
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
 
-        self.log_widget = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, height=15, state="disabled",
+        self.log_widget = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, state="disabled",
             bg="#1e1e1e", fg="#d4d4d4", relief="flat", borderwidth=2,
             font=("Consolas", 10), insertbackground="#d4d4d4"
         )
@@ -1321,6 +1341,11 @@ class SwitchGuiApp(tk.Tk):
                     self.paths[key].set('')
                 else:
                     self.paths[key].set(config.get('Paths', key, fallback=''))
+            
+            # Load offline mode setting
+            offline_mode_value = config.get('Settings', 'offline_mode', fallback='False')
+            self.offline_mode.set(offline_mode_value.lower() == 'true')
+            
             # Save config to clear transient paths from config.ini
             self._save_config()
         else:
@@ -1331,6 +1356,9 @@ class SwitchGuiApp(tk.Tk):
         """Saves current paths to config.ini."""
         config = configparser.ConfigParser()
         config['Paths'] = {key: var.get() for key, var in self.paths.items()}
+        config['Settings'] = {
+            'offline_mode': str(self.offline_mode.get())
+        }
         with open(self.config_file, 'w') as configfile:
             config.write(configfile)
         self._log(f"INFO: Configuration saved to {self.config_file}")
@@ -1373,10 +1401,16 @@ class SwitchGuiApp(tk.Tk):
 
     def _validate_paths_and_update_buttons(self):
         """Checks required paths for each level and enables/disables buttons."""
-        keys_ready = self.button_states["get_keys"] == "completed"
-        
+        # In offline mode, skip the "Get Keys" requirement since keys are provided via file selector
+        if self.offline_mode.get():
+            keys_ready = True
+            requirements = self.level_requirements_offline
+        else:
+            keys_ready = self.button_states["get_keys"] == "completed"
+            requirements = self.level_requirements
+
         # Level 1 Validation
-        level1_ok = all(self._is_path_valid(key) for key in self.level_requirements[1])
+        level1_ok = all(self._is_path_valid(key) for key in requirements[1])
         if self.start_level1_button:
             if keys_ready and level1_ok:
                 self.start_level1_button.config(state="normal")
@@ -1390,7 +1424,7 @@ class SwitchGuiApp(tk.Tk):
                     self.button_states["level1"] = "disabled"
 
         # Level 2 Validation
-        level2_ok = all(self._is_path_valid(key) for key in self.level_requirements[2])
+        level2_ok = all(self._is_path_valid(key) for key in requirements[2])
         if self.start_level2_button:
             if keys_ready and level2_ok:
                 self.start_level2_button.config(state="normal")
@@ -1417,7 +1451,7 @@ class SwitchGuiApp(tk.Tk):
                     self.button_states["advanced_user"] = "disabled"
 
         # Level 3 Validation
-        level3_ok = all(self._is_path_valid(key) for key in self.level_requirements[3])
+        level3_ok = all(self._is_path_valid(key) for key in requirements[3])
         if self.start_level3_button:
             if keys_ready and level3_ok:
                 self.start_level3_button.config(state="normal")
@@ -1441,11 +1475,23 @@ class SwitchGuiApp(tk.Tk):
         else:
             self._disable_prodinfo_menu()
 
+    def _is_widget_valid(self, widget):
+        """Check if a widget still exists and is valid."""
+        try:
+            if widget is None:
+                return False
+            # Try to access widget's winfo_exists() - will raise TclError if destroyed
+            return widget.winfo_exists()
+        except:
+            return False
+
     def _update_button_colors(self):
         """Update button colors and states based on workflow progression."""
         try:
             # Get Keys Buttons
             for button in self.get_keys_buttons:
+                if not self._is_widget_valid(button):
+                    continue
                 if self.button_states["get_keys"] == "completed":
                     button.config(style="Completed.TButton", state="disabled") # Green and disabled
                 else:
@@ -1454,7 +1500,7 @@ class SwitchGuiApp(tk.Tk):
             # Level Process Buttons
             for level_num, button_attr in [(1, "start_level1_button"), (2, "start_level2_button"), (3, "start_level3_button")]:
                 button = getattr(self, button_attr, None)
-                if button:
+                if button and self._is_widget_valid(button):
                     state_key = f"level{level_num}"
                     if self.button_states[state_key] == "active":
                         button.config(style="Active.TButton", state="normal")     # Blue and clickable
@@ -1464,7 +1510,7 @@ class SwitchGuiApp(tk.Tk):
                         button.config(style="Disabled.TButton", state="disabled")  # Grey and disabled
 
             # Advanced User Button (grey but clickable when available)
-            if self.advanced_user_button:
+            if self.advanced_user_button and self._is_widget_valid(self.advanced_user_button):
                 if self.button_states["advanced_user"] in ["available", "completed"]:
                     self.advanced_user_button.config(style="Disabled.TButton", state="normal")
                 else:
@@ -1472,13 +1518,15 @@ class SwitchGuiApp(tk.Tk):
 
             # Copy BOOT Buttons
             for button in self.copy_boot_buttons:
+                if not self._is_widget_valid(button):
+                    continue
                 if self.button_states["copy_boot"] == "active":
                     button.config(style="Active.TButton", state="normal")
                 elif self.button_states["copy_boot"] == "completed":
                     button.config(style="Completed.TButton", state="disabled")
                 else:
                     button.config(style="Disabled.TButton", state="disabled")
-                    
+
         except Exception as e:
             self._log(f"WARNING: Could not update button colors: {e}")    
 
@@ -1595,22 +1643,29 @@ class SwitchGuiApp(tk.Tk):
         # 1. Delete temporary files/folders created by NANDFixPro
         deleted_items = []
 
-        # Delete prod.keys and PRODINFO files
-        try:
-            keys_path = self.paths['keys'].get()
-            if keys_path and os.path.exists(keys_path):
-                os.remove(keys_path)
-                deleted_items.append("prod.keys")
-        except Exception as e:
-            self._log(f"WARNING: Could not delete prod.keys: {e}")
+        # Delete prod.keys and PRODINFO files (only if NOT in offline mode - user's files!)
+        if not self.offline_mode.get():
+            try:
+                keys_path = self.paths['keys'].get()
+                if keys_path and os.path.exists(keys_path):
+                    os.remove(keys_path)
+                    deleted_items.append("prod.keys")
+            except Exception as e:
+                self._log(f"WARNING: Could not delete prod.keys: {e}")
+        else:
+            self._log("INFO: Offline mode - keeping user's prod.keys file")
 
-        try:
-            prodinfo_path = self.paths['prodinfo'].get()
-            if prodinfo_path and os.path.exists(prodinfo_path):
-                os.remove(prodinfo_path)
-                deleted_items.append("PRODINFO")
-        except Exception as e:
-            self._log(f"WARNING: Could not delete PRODINFO: {e}")
+        # Also keep user's PRODINFO in offline mode (donor file for Level 3)
+        if not self.offline_mode.get():
+            try:
+                prodinfo_path = self.paths['prodinfo'].get()
+                if prodinfo_path and os.path.exists(prodinfo_path):
+                    os.remove(prodinfo_path)
+                    deleted_items.append("PRODINFO")
+            except Exception as e:
+                self._log(f"WARNING: Could not delete PRODINFO: {e}")
+        else:
+            self._log("INFO: Offline mode - keeping user's donor PRODINFO file")
 
         # Delete all switch_gui_* temp folders
         if self.paths['temp_directory'].get():
@@ -1647,10 +1702,12 @@ class SwitchGuiApp(tk.Tk):
             "advanced_user": "disabled"
         }
 
-        # 3. Clear the temporary keys, PRODINFO, and firmware paths from the config
+        # 3. Clear the temporary keys, PRODINFO, firmware, and RAWNAND paths from the config
         self.paths["keys"].set("")
         self.paths["prodinfo"].set("")
         self.paths["firmware"].set("")
+        self.paths["rawnand"].set("")  # Clear RAWNAND.bin path in offline mode
+        self.paths["output_l3"].set("")  # Clear Level 3 output folder
         self._save_config()
 
         # 4. Reset the donor PRODINFO flag
@@ -1732,26 +1789,53 @@ class SwitchGuiApp(tk.Tk):
         for key, label, type in paths:
             self._create_path_selector_row(input_frame, key, label, type)
 
-    def _create_standard_button_area(self, parent_frame, level_name, command, button_ref):
+    def _create_standard_button_area(self, parent_frame, level_name, command, button_ref, level_num=None):
         """Creates a standardized button area at a fixed grid row."""
         # This frame will now always be placed in row 4 of its parent
         button_area_frame = ttk.Frame(parent_frame)
         button_area_frame.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(20, 10))
-        
+
         # Create the main button row inside this standardized area
-        button_frame = self._create_main_button_row(button_area_frame, level_name, command, button_ref)
+        button_frame = self._create_main_button_row(button_area_frame, level_name, command, button_ref, level=level_num)
         button_frame.pack(pady=5)
-        
+
         return button_area_frame       
 
     def _setup_level1_tab(self, parent_frame):
-        info_text = ("Fixes a corrupt SYSTEM partition directly on your Switch's eMMC.\n\n"
-                     "• Use this for software errors, failed updates, or boot issues where only the OS is affected.\n"
-                     "• The process reads your Switch's own PRODINFO and SYSTEM partition to perform the fix.\n"
-                     "• This method preserves user data like saves and installed games.")
-        paths = [
-            ("firmware", "Firmware Folder:", "folder"),
-        ]
+        # Store reference to parent frame for rebuilding
+        self.level1_frame = parent_frame
+        self._build_level1_tab()
+
+    def _build_level1_tab(self):
+        """Build/rebuild Level 1 tab based on offline mode"""
+        parent_frame = self.level1_frame
+
+        # Clear existing widgets
+        for widget in parent_frame.winfo_children():
+            widget.destroy()
+
+        parent_frame.columnconfigure(1, weight=1)
+
+        # Dynamic description based on mode
+        if self.offline_mode.get():
+            info_text = ("OFFLINE MODE: Fixes a corrupt SYSTEM partition in a RAWNAND.bin file.\n\n"
+                         "• Use this for software errors, failed updates, or boot issues.\n"
+                         "• The process reads PRODINFO and SYSTEM from your RAWNAND.bin backup.\n"
+                         "• Output: RAWNAND_FIXED_L1.bin with preserved user data.")
+            paths = [
+                ("rawnand", "RAWNAND.bin File:", "file"),
+                ("keys", "prod.keys File:", "file"),
+                ("firmware", "Firmware Folder:", "folder"),
+            ]
+        else:
+            info_text = ("ONLINE MODE: Fixes a corrupt SYSTEM partition directly on your Switch's eMMC.\n\n"
+                         "• Use this for software errors, failed updates, or boot issues where only the OS is affected.\n"
+                         "• The process reads your Switch's own PRODINFO and SYSTEM partition to perform the fix.\n"
+                         "• This method preserves user data like saves and installed games.")
+            paths = [
+                ("firmware", "Firmware Folder:", "folder"),
+            ]
+
         self._setup_tab_content(parent_frame, "Level 1: Description", info_text, paths)
 
         # Row 2: Add a spacer to push the buttons to the bottom of the available area.
@@ -1775,19 +1859,46 @@ class SwitchGuiApp(tk.Tk):
         override_checkbox.pack(anchor="center")
 
         # Row 4: The main button area, now in a fixed position.
-        self._create_standard_button_area(parent_frame, "Level 1", 
-                                          lambda: self._start_threaded_process("Level 1"), 
-                                          "start_level1_button")
+        self._create_standard_button_area(parent_frame, "Level 1",
+                                          lambda: self._start_threaded_process("Level 1"),
+                                          "start_level1_button", level_num=1)
         self._update_button_colors()
 
     def _setup_level2_tab(self, parent_frame):
-        info_text = ("Rebuilds the NAND using clean donor partitions from the 'lib/NAND' folder.\n\n"
-                     "• Use this when multiple partitions are corrupt, but PRODINFO is still readable.\n"
-                     "• The process reads your Switch's PRODINFO, then flashes clean partitions over the existing ones.\n"
-                     "• This process WILL ERASE all user data.")
-        paths = [
-            ("firmware", "Firmware Folder:", "folder"),
-        ]
+        # Store reference to parent frame for rebuilding
+        self.level2_frame = parent_frame
+        self._build_level2_tab()
+
+    def _build_level2_tab(self):
+        """Build/rebuild Level 2 tab based on offline mode"""
+        parent_frame = self.level2_frame
+
+        # Clear existing widgets
+        for widget in parent_frame.winfo_children():
+            widget.destroy()
+
+        parent_frame.columnconfigure(1, weight=1)
+
+        # Dynamic description based on mode
+        if self.offline_mode.get():
+            info_text = ("OFFLINE MODE: Rebuilds NAND using clean donor partitions in a RAWNAND.bin file.\n\n"
+                         "• Use this when multiple partitions are corrupt in your backup.\n"
+                         "• The process reads PRODINFO from your RAWNAND.bin, then flashes clean partitions.\n"
+                         "• Output: RAWNAND_FIXED_L2.bin (ALL USER DATA ERASED)")
+            paths = [
+                ("rawnand", "RAWNAND.bin File:", "file"),
+                ("keys", "prod.keys File:", "file"),
+                ("firmware", "Firmware Folder:", "folder"),
+            ]
+        else:
+            info_text = ("ONLINE MODE: Rebuilds the NAND using clean donor partitions from the 'lib/NAND' folder.\n\n"
+                         "• Use this when multiple partitions are corrupt, but PRODINFO is still readable.\n"
+                         "• The process reads your Switch's PRODINFO, then flashes clean partitions over the existing ones.\n"
+                         "• This process WILL ERASE all user data.")
+            paths = [
+                ("firmware", "Firmware Folder:", "folder"),
+            ]
+
         self._setup_tab_content(parent_frame, "Level 2: Description", info_text, paths)
 
         # Row 2: Add a spacer.
@@ -1795,15 +1906,10 @@ class SwitchGuiApp(tk.Tk):
         spacer.grid(row=2, column=0, sticky="nsew")
         parent_frame.rowconfigure(2, weight=1)
 
-        # Row 3: The frame containing the actual Advanced Button.
+        # Row 3: Console type override checkbox
         advanced_frame = ttk.Frame(parent_frame)
         advanced_frame.grid(row=3, column=0, columnspan=3, pady=20)
-        advanced_button = ttk.Button(advanced_frame, text="Advanced: Fix USER Only",
-                                     command=self._start_user_fix_threaded, style="Disabled.TButton", state="disabled")
-        advanced_button.pack(ipady=5, ipadx=15)
-        self.advanced_user_button = advanced_button
 
-        # Add console type override checkbox below the advanced button
         override_checkbox = ttk.Checkbutton(
             advanced_frame,
             text="Override Console Type Detection",
@@ -1811,23 +1917,51 @@ class SwitchGuiApp(tk.Tk):
             command=self._on_override_toggle,
             style="Dark.TCheckbutton"
         )
-        override_checkbox.pack(anchor="center", pady=(15, 0))
+        override_checkbox.pack(anchor="center")
 
-        # Row 4: The main button area, in the same fixed position.
-        self._create_standard_button_area(parent_frame, "Level 2", 
-                                          lambda: self._start_threaded_process("Level 2"), 
-                                          "start_level2_button")
+        # Row 4: The main button area (Advanced USER fix button is now here, inline)
+        self._create_standard_button_area(parent_frame, "Level 2",
+                                          lambda: self._start_threaded_process("Level 2"),
+                                          "start_level2_button", level_num=2)
         self._update_button_colors()
 
     def _setup_level3_tab(self, parent_frame):
-        info_text = ("For total NAND loss, including PRODINFO. This is a last resort.\n\n"
-                     "• Reconstructs a complete NAND image from a donor PRODINFO file and clean templates.\n"
-                     "• The script automatically detects eMMC size (32/64GB) for the correct NAND skeleton.\n"
-                     "• Connect your Switch in 'eMMC RAW GPP' mode (Read-Only OFF) and click Start.")
-        paths = [
-            ("firmware", "Firmware Folder:", "folder"),
-            ("prodinfo", "Donor PRODINFO:", "file"),
-        ]
+        # Store reference to parent frame for rebuilding
+        self.level3_frame = parent_frame
+        self._build_level3_tab()
+
+    def _build_level3_tab(self):
+        """Build/rebuild Level 3 tab based on offline mode"""
+        parent_frame = self.level3_frame
+
+        # Clear existing widgets
+        for widget in parent_frame.winfo_children():
+            widget.destroy()
+
+        parent_frame.columnconfigure(1, weight=1)
+
+        # Dynamic description based on mode
+        if self.offline_mode.get():
+            info_text = ("OFFLINE MODE: Complete NAND reconstruction from scratch.\n\n"
+                         "• Reconstructs a complete NAND image from a donor PRODINFO and clean templates.\n"
+                         "• Automatically detects NAND size (32/64GB) from donor PRODINFO.\n"
+                         "• Output: RAWNAND.bin + BOOT0.bin + BOOT1.bin")
+            paths = [
+                ("keys", "prod.keys File:", "file"),
+                ("firmware", "Firmware Folder:", "folder"),
+                ("prodinfo", "Donor PRODINFO:", "file"),
+                ("output_l3", "Output Folder:", "folder"),
+            ]
+        else:
+            info_text = ("ONLINE MODE: For total NAND loss, including PRODINFO. This is a last resort.\n\n"
+                         "• Reconstructs a complete NAND image from a donor PRODINFO file and clean templates.\n"
+                         "• The script automatically detects eMMC size (32/64GB) for the correct NAND skeleton.\n"
+                         "• Connect your Switch in 'eMMC RAW GPP' mode (Read-Only OFF) and click Start.")
+            paths = [
+                ("firmware", "Firmware Folder:", "folder"),
+                ("prodinfo", "Donor PRODINFO:", "file"),
+            ]
+
         self._setup_tab_content(parent_frame, "Level 3: Description", info_text, paths)
 
         # Row 2: Add a spacer.
@@ -1838,11 +1972,11 @@ class SwitchGuiApp(tk.Tk):
         # Row 3: The empty placeholder frame for the 'Advanced Button'.
         advanced_frame_placeholder = ttk.Frame(parent_frame)
         advanced_frame_placeholder.grid(row=3, column=0, columnspan=3, pady=20)
-        
+
         # Row 4: The main button area, in the same fixed position.
-        self._create_standard_button_area(parent_frame, "Level 3", 
-                                          self._start_level3_threaded, 
-                                          "start_level3_button")
+        self._create_standard_button_area(parent_frame, "Level 3",
+                                          self._start_level3_threaded,
+                                          "start_level3_button", level_num=3)
         self._update_button_colors()
         
 
@@ -1859,7 +1993,7 @@ class SwitchGuiApp(tk.Tk):
         temp_dir_obj = None  # To hold the TemporaryDirectory object if created
         try:
             pythoncom.CoInitialize()
-            
+
             # Use a temporary directory for the operation
             if self.paths['temp_directory'].get():
                 temp_base = self.paths['temp_directory'].get()
@@ -1869,54 +2003,80 @@ class SwitchGuiApp(tk.Tk):
             else:
                 temp_dir_obj = tempfile.TemporaryDirectory(prefix="switch_gui_user_fix_")
                 temp_dir = temp_dir_obj.name
-            
+
             self._log(f"INFO: Created temporary directory at: {temp_dir}")
-            
-            # STEP 1: Detect eMMC with WMI
-            self._log("\n[STEP 1/4] Please connect Switch in Hekate eMMC RAW GPP mode (Read-Only OFF).")
-            self._log("--- Detecting target eMMC...")
-            potential_drives = self._detect_switch_drives_wmi()
-            if not potential_drives:
-                CustomDialog(self, title="Error", message="No potential Switch eMMC drives found.")
-                return
 
-            if len(potential_drives) > 1:
-                CustomDialog(self, title="Multiple Drives Found", message="Found multiple drives that could be a Switch eMMC. Please disconnect other USB drives.")
-                return
-            
-            target_drive = potential_drives[0]
-            drive_path = target_drive['path']
-            
-            # STEP 2: Confirm with the user
-            msg = (f"Found target eMMC:\n\nPath: {drive_path}\nSize: {target_drive['size']}\nModel: {target_drive['model']}\n\n"
-                   "This procedure will alter and fix the USER partition only. All user data on this partition will be erased.\n\n"
-                   "Are you sure you want to proceed?")
-            
-            dialog = CustomDialog(self, title="Confirm USER Partition Fix", message=msg, buttons="yesno")
-            if not dialog.result:
-                self._log("--- User cancelled the operation.")
-                return
+            # STEP 1: Get target (physical drive for live mode, RAWNAND.bin for offline mode)
+            if self.offline_mode.get():
+                # OFFLINE MODE: Use RAWNAND.bin file
+                self._log("\n--- OFFLINE MODE ---")
+                self._log("The USER fix will update your RAWNAND.bin file.")
+                self._log("\n[STEP 1/4] Using RAWNAND.bin file from settings...")
 
-            self._log(f"--- SUCCESS: User confirmed eMMC at {drive_path}")
+                nand_file_path = self.paths['rawnand'].get()
+                if not nand_file_path or not os.path.isfile(nand_file_path):
+                    CustomDialog(self, title="Error", message="RAWNAND.bin file not found. Please set the path in settings.")
+                    return
 
-            # STEP 3: Extract the correct USER partition
+                # Detect size from file
+                file_size_bytes = os.path.getsize(nand_file_path)
+                target_size_gb = file_size_bytes / (1024**3)
+                nand_target = nand_file_path
+                self._log(f"--- SUCCESS: Using RAWNAND.bin file (Size: {target_size_gb:.1f} GB)")
+            else:
+                # LIVE MODE: Detect physical drive
+                self._log("\n--- LIVE MODE ---")
+                self._log("The USER fix will write directly to your Switch's eMMC.")
+                self._log("\n[STEP 1/4] Please connect Switch in Hekate eMMC RAW GPP mode (Read-Only OFF).")
+                self._log("--- Detecting target eMMC...")
+
+                potential_drives = self._detect_switch_drives_wmi()
+                if not potential_drives:
+                    CustomDialog(self, title="Error", message="No potential Switch eMMC drives found.")
+                    return
+
+                if len(potential_drives) > 1:
+                    CustomDialog(self, title="Multiple Drives Found", message="Found multiple drives that could be a Switch eMMC. Please disconnect other USB drives.")
+                    return
+
+                target_drive = potential_drives[0]
+                drive_path = target_drive['path']
+                target_size_gb = target_drive['size_gb']
+
+                # Confirm with the user
+                msg = (f"Found target eMMC:\n\nPath: {drive_path}\nSize: {target_drive['size']}\nModel: {target_drive['model']}\n\n"
+                       "This procedure will alter and fix the USER partition only. All user data on this partition will be erased.\n\n"
+                       "Are you sure you want to proceed?")
+
+                dialog = CustomDialog(self, title="Confirm USER Partition Fix", message=msg, buttons="yesno")
+                if not dialog.result:
+                    self._log("--- User cancelled the operation.")
+                    return
+
+                nand_target = drive_path
+                self._log(f"--- SUCCESS: User confirmed eMMC at {drive_path}")
+
+            # STEP 2: Extract the correct USER partition
             self._log("\n[STEP 2/4] Preparing donor USER partition...")
             try:
                 script_dir = Path(__file__).parent
             except NameError:
                 script_dir = Path.cwd()
             partitions_folder = script_dir / "lib" / "NAND"
-            
-            target_size_gb = target_drive['size_gb']
+
             user_archive = "USER-64.7z" if target_size_gb > 40 else "USER-32.7z"
-            
+
             cmd = [self.paths['7z'].get(), 'x', str(partitions_folder / user_archive), f'-o{temp_dir}', '-bsp1', '-y']
             if self._run_command_with_progress(cmd, "Extracting USER partition")[0] != 0:
                 self._log("ERROR: Failed to extract USER partition.")
                 return
-                
-            # STEP 4: Flash the USER partition
-            self._log("\n[STEP 3/4] Flashing first 100MB of USER partition to eMMC...")
+
+            # STEP 3: Flash the USER partition
+            if self.offline_mode.get():
+                self._log(f"\n[STEP 3/4] Flashing first 100MB of USER partition to RAWNAND.bin...")
+            else:
+                self._log(f"\n[STEP 3/4] Flashing first 100MB of USER partition to eMMC...")
+
             nx_exe = self.paths['nxnandmanager'].get()
             keyset_path = self.paths['keys'].get()
             user_dec_path = Path(temp_dir) / "USER.dec"
@@ -1925,20 +2085,28 @@ class SwitchGuiApp(tk.Tk):
                 self._log("ERROR: Extracted USER.dec not found.")
                 return
 
-            flash_cmd = [nx_exe, '-i', str(user_dec_path), '-o', drive_path, '-part=USER', '-e', '-keyset', keyset_path, 'FORCE']
-            
-            # --- CHANGED: Use the optimized 100MB flash function ---
+            flash_cmd = [nx_exe, '-i', str(user_dec_path), '-o', nand_target, '-part=USER', '-e', '-keyset', keyset_path, 'FORCE']
+
+            # Use the optimized 100MB flash function
             if self._run_and_interrupt_flash(flash_cmd, "USER", 100) != 0:
-                self._log("ERROR: Failed to flash USER partition to eMMC.")
+                if self.offline_mode.get():
+                    self._log("ERROR: Failed to flash USER partition to RAWNAND.bin.")
+                else:
+                    self._log("ERROR: Failed to flash USER partition to eMMC.")
                 return
-            
+
             self._log("\n[STEP 4/4] Process Complete!")
             self._log("SUCCESS: The USER partition has been replaced.")
             self._log("--- ADVANCED USER FIX FINISHED ---")
 
-            CustomDialog(self, title="Process Complete", 
-                message="The USER partition was successfully fixed.\n\n" +
-                        "All previous user data has been erased.")
+            if self.offline_mode.get():
+                CustomDialog(self, title="Process Complete",
+                    message="The USER partition in RAWNAND.bin was successfully fixed.\n\n" +
+                            "All previous user data has been erased.")
+            else:
+                CustomDialog(self, title="Process Complete",
+                    message="The USER partition was successfully fixed.\n\n" +
+                            "All previous user data has been erased.")
 
         except Exception as e:
             self._log(f"An unexpected critical error occurred: {e}\n{traceback.format_exc()}")
@@ -2153,20 +2321,21 @@ class SwitchGuiApp(tk.Tk):
                 self._log(f"INFO: Cleaned up temporary directory: {output_path}")
             self.last_output_dir = None # Reset the path after cleanup
 
-            # Delete prod.keys and PRODINFO files after successful completion
-            try:
-                keys_path = self.paths['keys'].get()
-                if keys_path and os.path.exists(keys_path):
-                    os.remove(keys_path)
-            except Exception as e:
-                pass  # Silent cleanup
+            # Delete prod.keys and PRODINFO files after successful completion (only in online mode)
+            if not self.offline_mode.get():
+                try:
+                    keys_path = self.paths['keys'].get()
+                    if keys_path and os.path.exists(keys_path):
+                        os.remove(keys_path)
+                except Exception as e:
+                    pass  # Silent cleanup
 
-            try:
-                prodinfo_path = self.paths['prodinfo'].get()
-                if prodinfo_path and os.path.exists(prodinfo_path):
-                    os.remove(prodinfo_path)
-            except Exception as e:
-                pass  # Silent cleanup
+                try:
+                    prodinfo_path = self.paths['prodinfo'].get()
+                    if prodinfo_path and os.path.exists(prodinfo_path):
+                        os.remove(prodinfo_path)
+                except Exception as e:
+                    pass  # Silent cleanup
 
             CustomDialog(self, title="Files Copied",
                          message=f"BOOT0 and BOOT1 successfully copied to:\n{restore_path}\n\nPlease manually eject the SD card. You can now restore them using Hekate.")
@@ -2337,23 +2506,56 @@ class SwitchGuiApp(tk.Tk):
             self.manual_console_type.set("")
             self._log("INFO: Console type override disabled - Using automatic detection")
 
+    def _on_offline_mode_toggle(self):
+        """Handle offline mode toggle"""
+        if self.offline_mode.get():
+            self._log("INFO: Offline Mode ENABLED - Will use RAWNAND.bin file instead of physical eMMC")
+            self._log("INFO: Please configure file paths for RAWNAND.bin and prod.keys")
+            self._log("INFO: Output will be saved as fixed RAWNAND file")
+        else:
+            self._log("INFO: Offline Mode DISABLED - Will use physical eMMC connection")
+
+        # Save the setting
+        self._save_config()
+
+        # Rebuild all tabs to show appropriate file selectors
+        self._rebuild_all_tabs()
+
+        # Re-validate paths to update button states
+        self._validate_paths_and_update_buttons()
+
+    def _rebuild_all_tabs(self):
+        """Rebuild all level tabs based on current offline mode state"""
+        # Clear button lists to prevent stale references
+        self.get_keys_buttons = []
+        self.copy_boot_buttons = []
+        self.advanced_user_button = None
+
+        if hasattr(self, 'level1_frame'):
+            self._build_level1_tab()
+        if hasattr(self, 'level2_frame'):
+            self._build_level2_tab()
+        if hasattr(self, 'level3_frame'):
+            self._build_level3_tab()
+
     def _on_closing(self):
         """Handle application closing - clean up temp directory and temporary files."""
         try:
-            # Clean up prod.keys and PRODINFO files
-            try:
-                keys_path = self.paths['keys'].get()
-                if keys_path and os.path.exists(keys_path):
-                    os.remove(keys_path)
-            except Exception as e:
-                pass  # Silent cleanup
+            # Clean up prod.keys and PRODINFO files (only in online mode - user's files in offline mode!)
+            if not self.offline_mode.get():
+                try:
+                    keys_path = self.paths['keys'].get()
+                    if keys_path and os.path.exists(keys_path):
+                        os.remove(keys_path)
+                except Exception as e:
+                    pass  # Silent cleanup
 
-            try:
-                prodinfo_path = self.paths['prodinfo'].get()
-                if prodinfo_path and os.path.exists(prodinfo_path):
-                    os.remove(prodinfo_path)
-            except Exception as e:
-                pass  # Silent cleanup
+                try:
+                    prodinfo_path = self.paths['prodinfo'].get()
+                    if prodinfo_path and os.path.exists(prodinfo_path):
+                        os.remove(prodinfo_path)
+                except Exception as e:
+                    pass  # Silent cleanup
 
             # Clean up the last temp directory if it exists and wasn't copied to SD
             if hasattr(self, 'last_output_dir') and self.last_output_dir and os.path.exists(self.last_output_dir):
@@ -2409,46 +2611,78 @@ class SwitchGuiApp(tk.Tk):
             self._re_enable_buttons()
 
     def _run_level3_process(self, temp_dir):
-        self._log("\n--- WARNING ---")
-        self._log("Level 3 will completely overwrite your Switch's eMMC with a reconstructed NAND.")
-        self._log("This is irreversible. Ensure you have backups and a stable connection.")
+        if self.offline_mode.get():
+            self._log("\n--- OFFLINE MODE ---")
+            self._log("Level 3 will create a completely reconstructed NAND file.")
+        else:
+            self._log("\n--- WARNING ---")
+            self._log("Level 3 will completely overwrite your Switch's eMMC with a reconstructed NAND.")
+            self._log("This is irreversible. Ensure you have backups and a stable connection.")
 
-        # ADD THIS LINE:
-        if not self._check_disk_space(60): 
-            return
-        
-        self._log("\n[STEP 1/8] Please connect your Switch in Hekate's eMMC RAW GPP mode (Read-Only OFF).")
-        self._log("--- Detecting target eMMC...")
-        
-        # Detect target eMMC
-        potential_drives = self._detect_switch_drives_wmi()
-        if not potential_drives:
-            CustomDialog(self, title="Error", message="No potential Switch eMMC drives found. Please ensure it is connected properly.")
+        if not self._check_disk_space(60):
             return
 
-        if len(potential_drives) > 1:
-            CustomDialog(self, title="Multiple Drives Found", message="Found multiple drives that could be a Switch eMMC. "
-                                                                    "For safety, please disconnect other USB drives of 32GB or 64GB and try again.")
-            return
-        
-        target_drive = potential_drives[0]
-        target_size_gb = target_drive['size_gb']
-        target_path = target_drive['path']
+        # Determine target size for offline mode or get from physical eMMC
+        if self.offline_mode.get():
+            self._log("\n[STEP 1/8] Determining NAND size from donor PRODINFO...")
+            # Read PRODINFO to determine size
+            prodinfo_donor_path = Path(self.paths['prodinfo'].get())
+            if not prodinfo_donor_path.is_file():
+                self._log("ERROR: Donor PRODINFO file not found.")
+                CustomDialog(self, title="Error", message="Please select a donor PRODINFO file.")
+                return
 
-        # Store the drive type for later use when copying boot files
-        self.last_target_drive_type = target_drive.get('type', 'eMMC GPP')
+            # Validate PRODINFO
+            with open(prodinfo_donor_path, 'rb') as f:
+                if f.read(4) != b'CAL0':
+                    error_msg = "The prodinfo is not correct, make sure it is decrypted!"
+                    self._log(f"ERROR: PRODINFO magic 'CAL0' not found. {error_msg}")
+                    CustomDialog(self, title="Invalid PRODINFO", message=error_msg)
+                    return
+                # Read model to determine size
+                f.seek(0x3740)
+                product_model_id = int.from_bytes(f.read(4), byteorder='little')
 
-        # Confirm with user
-        msg = (f"Found target {target_drive.get('type', 'eMMC')}:\n\nPath: {target_path}\nSize: {target_drive['size']}\nModel: {target_drive['model']}\n\n"
-               "WARNING: ALL DATA ON THIS DRIVE WILL BE PERMANENTLY ERASED.\n\n"
-               "This will perform a complete Level 3 recovery. Continue?")
-        
-        dialog = CustomDialog(self, title="Confirm Level 3 Recovery", message=msg, buttons="yesno")
-        if not dialog.result:
-            self._log("--- User cancelled Level 3 recovery.")
-            return
-        
-        self._log(f"SUCCESS: User confirmed target eMMC at {target_path} ({target_drive['size']})")
+            model_map = {1: "Erista", 3: "V2", 4: "Lite", 6: "OLED"}
+            detected_model = model_map.get(product_model_id, "Unknown Mariko")
+            # OLED has 64GB, others have 32GB
+            target_size_gb = 64 if detected_model == "OLED" else 32
+            self._log(f"SUCCESS: Detected {detected_model} model from PRODINFO - using {target_size_gb}GB NAND skeleton")
+            target_path = None  # No physical target in offline mode
+            self.last_target_drive_type = "File"
+        else:
+            self._log("\n[STEP 1/8] Please connect your Switch in Hekate's eMMC RAW GPP mode (Read-Only OFF).")
+            self._log("--- Detecting target eMMC...")
+
+            # Detect target eMMC
+            potential_drives = self._detect_switch_drives_wmi()
+            if not potential_drives:
+                CustomDialog(self, title="Error", message="No potential Switch eMMC drives found. Please ensure it is connected properly.")
+                return
+
+            if len(potential_drives) > 1:
+                CustomDialog(self, title="Multiple Drives Found", message="Found multiple drives that could be a Switch eMMC. "
+                                                                        "For safety, please disconnect other USB drives of 32GB or 64GB and try again.")
+                return
+
+            target_drive = potential_drives[0]
+            target_size_gb = target_drive['size_gb']
+            target_path = target_drive['path']
+
+            # Store the drive type for later use when copying boot files
+            self.last_target_drive_type = target_drive.get('type', 'eMMC GPP')
+
+            # Confirm with user
+            msg = (f"Found target {target_drive.get('type', 'eMMC')}:\n\nPath: {target_path}\nSize: {target_drive['size']}\nModel: {target_drive['model']}\n\n"
+                   "WARNING: ALL DATA ON THIS DRIVE WILL BE PERMANENTLY ERASED.\n\n"
+                   "This will perform a complete Level 3 recovery. Continue?")
+
+            dialog = CustomDialog(self, title="Confirm Level 3 Recovery", message=msg, buttons="yesno")
+            if not dialog.result:
+                self._log("--- User cancelled Level 3 recovery.")
+                return
+
+            self._log(f"SUCCESS: User confirmed target eMMC at {target_path} ({target_drive['size']})")
         
         self._log(f"\n[STEP 2/8] Preparing donor NAND skeleton...")
 
@@ -2629,32 +2863,67 @@ class SwitchGuiApp(tk.Tk):
                 return
         
         self._log("SUCCESS: All partitions flashed to donor NAND skeleton.")
-        
-        self._log(f"\n[STEP 7/8] Writing complete NAND image to target eMMC...")
-        self._log("--- This may take a few minutes. Do not disconnect the Switch.")
-        
-        # Raw copy the complete filled skeleton to target eMMC
-        if not self._raw_copy_nand_to_emmc(working_nand, target_path):
-            self._log("ERROR: Failed to write NAND image to target eMMC.")
-            return
-        
-        self._log(f"\n[STEP 8/8] Saving BOOT0 & BOOT1 to output folder...")
 
-        shutil.copy(versioned_folder / "BOOT0.bin", Path(temp_dir) / "BOOT0")
-        shutil.copy(versioned_folder / "BOOT1.bin", Path(temp_dir) / "BOOT1")
-        self._log(f"SUCCESS: BOOT0 and BOOT1 saved to {temp_dir}")
+        if self.offline_mode.get():
+            # Offline mode - save to the user-selected output folder
+            self._log(f"\n[STEP 7/8] Saving complete NAND image...")
 
-        self._log(f"\n[STEP 8/8] Level 3 Recovery Complete!")
-        self._log("IMPORTANT: Please flash BOOT0 and BOOT1 manually using Hekate for safety.")
-        self._log("Your Switch should now boot with the reconstructed NAND.")
-        self._log("\n--- LEVEL 3 COMPLETE RECOVERY FINISHED ---")
+            output_folder = Path(self.paths['output_l3'].get())
+            final_output = output_folder / "RAWNAND.bin"
 
-        # ADD THESE 3 LINES HERE:
-        self.button_states["copy_boot"] = "active"
-        self.button_states["level3"] = "completed"
-        self._update_button_colors()
-        
-        CustomDialog(self, title="Level 3 Complete", 
+            self._log(f"--- Copying complete NAND image to {final_output}...")
+            shutil.copy2(working_nand, final_output)
+            self._log(f"SUCCESS: Complete NAND image saved to {final_output}")
+
+            # Also save BOOT0 and BOOT1 to the same location
+            self._log(f"\n[STEP 8/8] Saving BOOT0 & BOOT1 files...")
+            boot0_output = output_folder / "BOOT0.bin"
+            boot1_output = output_folder / "BOOT1.bin"
+            shutil.copy2(versioned_folder / "BOOT0.bin", boot0_output)
+            shutil.copy2(versioned_folder / "BOOT1.bin", boot1_output)
+            self._log(f"SUCCESS: BOOT0 saved to {boot0_output}")
+            self._log(f"SUCCESS: BOOT1 saved to {boot1_output}")
+
+            self._log("\n--- LEVEL 3 OFFLINE RECOVERY COMPLETE ---")
+            self._log(f"IMPORTANT: Complete NAND image created at: {final_output}")
+            self._log(f"BOOT files saved to: {output_folder}")
+            self._log("Flash these files to your Switch using appropriate tools.")
+
+            self.button_states["level3"] = "completed"
+            self._update_button_colors()
+
+            CustomDialog(self, title="Level 3 Complete",
+                        message=f"Level 3 offline recovery completed successfully!\n\n" +
+                                f"Complete NAND: {final_output}\n" +
+                                f"BOOT0: {boot0_output}\n" +
+                                f"BOOT1: {boot1_output}\n\n" +
+                                "Flash these files to your Switch using appropriate tools.")
+
+        else:
+            # Online mode - write to physical eMMC
+            self._log(f"\n[STEP 7/8] Writing complete NAND image to target eMMC...")
+            self._log("--- This may take a few minutes. Do not disconnect the Switch.")
+
+            # Raw copy the complete filled skeleton to target eMMC
+            if not self._raw_copy_nand_to_emmc(working_nand, target_path):
+                self._log("ERROR: Failed to write NAND image to target eMMC.")
+                return
+
+            self._log(f"\n[STEP 8/8] Saving BOOT0 & BOOT1 to output folder...")
+            shutil.copy(versioned_folder / "BOOT0.bin", Path(temp_dir) / "BOOT0")
+            shutil.copy(versioned_folder / "BOOT1.bin", Path(temp_dir) / "BOOT1")
+            self._log(f"SUCCESS: BOOT0 and BOOT1 saved to {temp_dir}")
+
+            self._log(f"\n--- Level 3 Recovery Complete!")
+            self._log("IMPORTANT: Please flash BOOT0 and BOOT1 manually using Hekate for safety.")
+            self._log("Your Switch should now boot with the reconstructed NAND.")
+            self._log("\n--- LEVEL 3 COMPLETE RECOVERY FINISHED ---")
+
+            self.button_states["copy_boot"] = "active"
+            self.button_states["level3"] = "completed"
+            self._update_button_colors()
+
+            CustomDialog(self, title="Level 3 Complete",
                         message="Level 3 recovery completed successfully!\n\n" +
                                 "Don't forget to flash BOOT0 and BOOT1 using Hekate.\n\n" +
                                 "Your Switch should now boot normally.")
@@ -2813,6 +3082,15 @@ class SwitchGuiApp(tk.Tk):
             relief="flat", borderwidth=0
         )
         menubar.add_cascade(label="Settings", menu=settings_menu)
+        
+        # Add offline mode toggle
+        settings_menu.add_checkbutton(
+            label="Offline Mode (Use RAWNAND.bin file)",
+            variable=self.offline_mode,
+            command=self._on_offline_mode_toggle
+        )
+        settings_menu.add_separator()
+
         paths_to_show = {"7z": "7-Zip (7z.exe)...", "emmchaccgen": "EmmcHaccGen.exe...",
                             "nxnandmanager": "NxNandManager.exe...", "osfmount": "OSFMount.com...",
                             "partitions_folder": "Partitions Folder (NAND)...",
@@ -2831,11 +3109,12 @@ class SwitchGuiApp(tk.Tk):
                 "nxnandmanager": [("NxNandManager Executable", "NxNandManager.exe"), ("Executable", "*.exe"), ("All files", "*.*")],
                 "emmchaccgen": [("EmmcHaccGen Files", "*.exe *.ini"), ("Executable", "*.exe"), ("INI File", "*.ini"), ("All files", "*.*")],
                 "keys": [("Keys File", "*.keys"), ("All files", "*.*")],
-                "prodinfo": [("PRODINFO File", "*.*")]
+                "prodinfo": [("PRODINFO File", "*.*")],
+                "rawnand": [("NAND Files", "*.bin"), ("All files", "*.*")]
             }
             # Get the filter for the current selection key
             current_filter = file_filters.get(key)
-            
+
             path = filedialog.askopenfilename(
                 title=f"Select {key.replace('_', ' ').title()} File",
                 filetypes=current_filter
@@ -2843,11 +3122,35 @@ class SwitchGuiApp(tk.Tk):
 
         elif type == "folder":
             path = filedialog.askdirectory(title=f"Select {key.replace('_', ' ').title()} Folder")
-        
-        if path: 
+
+        if path:
             self.paths[key].set(os.path.normpath(path))
             self._save_config()
             self._validate_paths_and_update_buttons()
+
+            # Check if user selected a prodinfo file in Level 3 offline mode
+            if key == "prodinfo" and self.offline_mode.get():
+                # Check if Level 3 tab is active
+                current_tab = self.tab_control.select()
+                level3_tab_id = self.tab_control.tabs()[2]  # Level 3 is the third tab (index 2)
+
+                if current_tab == level3_tab_id:
+                    # Validate that the prodinfo is decrypted
+                    try:
+                        with open(path, 'rb') as f:
+                            if f.read(4) == b'CAL0':
+                                # Show popup asking if user wants to edit the PRODINFO
+                                prodinfo_filename = os.path.basename(path)
+                                dialog = CustomDialog(self, title="Donor PRODINFO Selected",
+                                                    message=f"Selected donor PRODINFO file: {prodinfo_filename}\n\nWould you like to edit it (serial, colors, WiFi region) before using in Level 3?",
+                                                    buttons="yesno")
+
+                                if dialog.result:
+                                    # User wants to edit - open editor immediately after this function completes
+                                    self.after(100, self._open_prodinfo_editor)  # Delay to ensure dialog cleanup
+                    except Exception as e:
+                        # Silently ignore validation errors, they will be caught during the actual process
+                        pass
 
     def _log(self, message, end="\n"):
         # Check if log_widget exists before trying to use it
@@ -2986,64 +3289,94 @@ class SwitchGuiApp(tk.Tk):
 
     # In class SwitchGuiApp:
 
+    def _get_nand_source(self):
+        """
+        Get the NAND source for processing based on offline mode.
+        Returns: (source_path, source_type) where source_type is 'file' or 'device'
+        """
+        if self.offline_mode.get():
+            # Offline mode - use RAWNAND.bin file
+            rawnand_path = self.paths['rawnand'].get()
+            if not rawnand_path or not Path(rawnand_path).exists():
+                self._log("ERROR: RAWNAND.bin file not found or not set")
+                CustomDialog(self, title="Error", message="Please select a valid RAWNAND.bin file in Settings.")
+                return None, None
+            
+            self._log(f"INFO: Using offline mode with RAWNAND.bin: {rawnand_path}")
+            return rawnand_path, 'file'
+        else:
+            # Online mode - detect physical eMMC
+            self._log("\n--- Detecting target eMMC...")
+            potential_drives = self._detect_switch_drives_wmi()
+            if not potential_drives:
+                CustomDialog(self, title="Error", message="No potential Switch eMMC drives found. Please ensure it is connected properly.")
+                return None, None
+
+            if len(potential_drives) > 1:
+                CustomDialog(self, title="Multiple Drives Found", message="Found multiple drives that could be a Switch eMMC. "
+                                                                        "For safety, please disconnect other USB drives and try again.")
+                return None, None
+            
+            target_drive = potential_drives[0]
+            drive_path = target_drive['path']
+
+            # Store the drive type for later use when copying boot files
+            self.last_target_drive_type = target_drive.get('type', 'eMMC GPP')
+
+            # Confirm with user
+            msg = (f"Found target {target_drive.get('type', 'eMMC')}:\n\nPath: {drive_path}\nSize: {target_drive['size']}\nModel: {target_drive['model']}\n\n"
+                   "Continue?")
+            
+            dialog = CustomDialog(self, title="Confirm Target", message=msg, buttons="yesno")
+            if not dialog.result:
+                self._log("--- User cancelled operation.")
+                return None, None
+            
+            self._log(f"SUCCESS: User confirmed eMMC at {drive_path}")
+            return drive_path, 'device'
+
     def _run_level1_process(self, temp_dir):
-        self._log("\n--- WARNING ---")
-        self._log("The Level 1 process will write directly to your Switch's eMMC.")
+        if self.offline_mode.get():
+            self._log("\n--- OFFLINE MODE ---")
+            self._log("The Level 1 process will create a fixed RAWNAND.bin file.")
+        else:
+            self._log("\n--- WARNING ---")
+            self._log("The Level 1 process will write directly to your Switch's eMMC.")
 
         if not self._check_disk_space(60):
             return
         
-        self._log("\n[STEP 1/8] Please connect your Switch in Hekate's eMMC RAW GPP mode (Read-Only OFF).")
-        self._log("--- Detecting target eMMC...")
-        potential_drives = self._detect_switch_drives_wmi()
-        if not potential_drives:
-            CustomDialog(self, title="Error", message="No potential Switch eMMC drives found. Please ensure it is connected properly.")
-            return
-
-        if len(potential_drives) > 1:
-            CustomDialog(self, title="Multiple Drives Found", message="Found multiple drives that could be a Switch eMMC. "
-                                                                    "For safety, please disconnect other USB drives and try again.")
-            return
+        # Get NAND source (file or device)
+        if not self.offline_mode.get():
+            self._log("\n[STEP 1/8] Please connect your Switch in Hekate's eMMC RAW GPP mode (Read-Only OFF).")
+        else:
+            self._log("\n[STEP 1/8] Using RAWNAND.bin file from settings...")
         
-        target_drive = potential_drives[0]
-        drive_path = target_drive['path']
-
-        # Store the drive type for later use when copying boot files
-        self.last_target_drive_type = target_drive.get('type', 'eMMC GPP')
-
-        # --- ADDED: Confirmation Pop-up for Level 1 ---
-        msg = (f"Found target {target_drive.get('type', 'eMMC')}:\n\nPath: {drive_path}\nSize: {target_drive['size']}\nModel: {target_drive['model']}\n\n"
-               "This will start the Level 1 System Restore process.\n"
-               "User data like saves and games will be preserved.\n\nContinue?")
-        
-        dialog = CustomDialog(self, title="Confirm Level 1 Restore", message=msg, buttons="yesno")
-        if not dialog.result:
-            self._log("--- User cancelled Level 1 restore.")
+        nand_source, source_type = self._get_nand_source()
+        if not nand_source:
             return
-        # --- END OF ADDED CODE ---
 
-        self._log(f"SUCCESS: User confirmed eMMC at {drive_path}")
         nx_exe = self.paths['nxnandmanager'].get()
         
-        self._log("--- Dumping and decrypting PRODINFO from eMMC...")
+        self._log(f"\n[STEP 2/8] Dumping and decrypting PRODINFO from {source_type}...")
         keyset_path = self.paths['keys'].get()
         prodinfo_path = Path(temp_dir) / "PRODINFO"
-        dump_cmd = [nx_exe, '-i', drive_path, '-keyset', keyset_path, '-o', temp_dir, '-d', '-part=PRODINFO']
+        dump_cmd = [nx_exe, '-i', nand_source, '-keyset', keyset_path, '-o', temp_dir, '-d', '-part=PRODINFO']
         
         if self._run_command(dump_cmd)[0] != 0 or not prodinfo_path.exists():
-            self._log(f"ERROR: Failed to dump or decrypt PRODINFO from the eMMC. It may be corrupt.")
+            self._log(f"ERROR: Failed to dump or decrypt PRODINFO from the {source_type}. It may be corrupt.")
             CustomDialog(self, title="PRODINFO Error", message="PRODINFO is not found or damaged. Please use Level 2 or Level 3 instead.")
             return
 
         with open(prodinfo_path, 'rb') as f:
             if f.read(4) != b'CAL0':
-                self._log(f"ERROR: The PRODINFO dumped from the eMMC is invalid or encrypted (magic is not CAL0).")
+                self._log(f"ERROR: The PRODINFO dumped from the {source_type} is invalid or encrypted (magic is not CAL0).")
                 CustomDialog(self, title="PRODINFO Error", message="PRODINFO is not found or damaged. Please use Level 2 or Level 3 instead.")
                 return
 
         self._log("SUCCESS: PRODINFO is valid and decrypted.")
 
-        self._log(f"\n[STEP 2/8] Reading PRODINFO file...")
+        self._log(f"\n[STEP 3/8] Reading PRODINFO file...")
 
         # Check if console type override is enabled
         if self.override_console_type.get() and self.manual_console_type.get():
@@ -3070,7 +3403,7 @@ class SwitchGuiApp(tk.Tk):
             detected_model = model_map.get(product_model_id, "Unknown Mariko")
             self._log(f"SUCCESS: Detected model: {detected_model}")
 
-        self._log(f"\n[STEP 3/8] Generating boot files...")
+        self._log(f"\n[STEP 4/8] Generating boot files...")
         emmchaccgen_out_dir = Path(temp_dir) / "emmchaccgen_out"
         emmchaccgen_out_dir.mkdir()
         emmchaccgen_cmd = [self.paths['emmchaccgen'].get(), '--keys', keyset_path, '--fw', self.paths['firmware'].get()]
@@ -3082,8 +3415,8 @@ class SwitchGuiApp(tk.Tk):
             emmchaccgen_cmd.append('--no-autorcm')
         if self._run_command(emmchaccgen_cmd, cwd=str(emmchaccgen_out_dir))[0] != 0: return
 
-        self._log(f"\n[STEP 4/8] Dumping and decrypting SYSTEM partition from eMMC...")
-        dump_cmd = [nx_exe, '-i', drive_path, '-keyset', keyset_path, '-o', temp_dir, '-d', '-part=SYSTEM']
+        self._log(f"\n[STEP 5/8] Dumping and decrypting SYSTEM partition from {source_type}...")
+        dump_cmd = [nx_exe, '-i', nand_source, '-keyset', keyset_path, '-o', temp_dir, '-d', '-part=SYSTEM']
         if self._run_command(dump_cmd)[0] != 0: return
         
         system_dec_path = Path(temp_dir) / "SYSTEM"
@@ -3114,38 +3447,75 @@ class SwitchGuiApp(tk.Tk):
             self._log("--- Dismounting SYSTEM partition...")
             self._run_command([self.paths['osfmount'].get(), '-D', '-m', drive_letter_str])
 
-        self._log(f"\n[STEP 5 & 6/8] Flashing modified SYSTEM back to eMMC...")
-        flash_cmd = [nx_exe, '-i', str(system_dec_path), '-o', drive_path, '-part=SYSTEM', '-e', '-keyset', keyset_path, 'FORCE']
-        if self._run_command(flash_cmd)[0] != 0:
-            return self._log("ERROR: Failed to flash SYSTEM partition back to eMMC.")
-        self._log("SUCCESS: SYSTEM partition has been restored.")
+        if self.offline_mode.get():
+            # In offline mode, flash directly back to the original RAWNAND.bin (just like online mode)
+            self._log(f"\n[STEP 6/8] Flashing modified SYSTEM back to RAWNAND.bin...")
+            flash_cmd = [nx_exe, '-i', str(system_dec_path), '-o', nand_source, '-part=SYSTEM', '-e', '-keyset', keyset_path, 'FORCE']
+            if self._run_command(flash_cmd)[0] != 0:
+                return self._log("ERROR: Failed to flash SYSTEM partition back to RAWNAND.bin.")
+            self._log("SUCCESS: SYSTEM partition has been restored in RAWNAND.bin.")
 
-        self._log(f"\n[STEP 7/8] Flashing BCPKG2 partitions...")
-        versioned_folder = next(d for d in emmchaccgen_out_dir.iterdir() if d.is_dir())
-        bcpkg2_partitions = ["BCPKG2-1-Normal-Main", "BCPKG2-2-Normal-Sub", "BCPKG2-3-SafeMode-Main", "BCPKG2-4-SafeMode-Sub"]
-        for part_name in bcpkg2_partitions:
-            bcpkg2_file = versioned_folder / f"{part_name}.bin"
-            if not bcpkg2_file.exists(): return self._log(f"ERROR: {bcpkg2_file.name} not found.")
-            flash_cmd = [nx_exe, '-i', str(bcpkg2_file), '-o', drive_path, f'-part={part_name}', 'FORCE']
-            if self._run_command(flash_cmd)[0] != 0: return self._log(f"ERROR: Failed to flash {part_name}.")
-        self._log("SUCCESS: All BCPKG2 partitions have been restored.")
+            self._log(f"\n[STEP 7/8] Flashing BCPKG2 partitions...")
+            versioned_folder = next(d for d in emmchaccgen_out_dir.iterdir() if d.is_dir())
+            bcpkg2_partitions = ["BCPKG2-1-Normal-Main", "BCPKG2-2-Normal-Sub", "BCPKG2-3-SafeMode-Main", "BCPKG2-4-SafeMode-Sub"]
+            for part_name in bcpkg2_partitions:
+                bcpkg2_file = versioned_folder / f"{part_name}.bin"
+                if bcpkg2_file.exists():
+                    flash_cmd = [nx_exe, '-i', str(bcpkg2_file), '-o', nand_source, f'-part={part_name}', 'FORCE']
+                    if self._run_command(flash_cmd)[0] != 0:
+                        return self._log(f"ERROR: Failed to flash {part_name}.")
+            self._log("SUCCESS: All BCPKG2 partitions have been restored.")
 
-        self._log(f"\n[STEP 8/8] Saving BOOT0 & BOOT1 to output folder...")
+            # Save BOOT0 and BOOT1 to the same location as RAWNAND.bin
+            self._log(f"\n[STEP 8/8] Saving BOOT0 & BOOT1 files...")
+            rawnand_folder = Path(nand_source).parent
+            boot0_output = rawnand_folder / "BOOT0.bin"
+            boot1_output = rawnand_folder / "BOOT1.bin"
+            shutil.copy2(versioned_folder / "BOOT0.bin", boot0_output)
+            shutil.copy2(versioned_folder / "BOOT1.bin", boot1_output)
+            self._log(f"SUCCESS: BOOT0 saved to {boot0_output}")
+            self._log(f"SUCCESS: BOOT1 saved to {boot1_output}")
+
+            self._log("\n--- Level 1 Offline System Restore completed successfully! ---")
+            self._log(f"IMPORTANT: Your RAWNAND.bin has been updated at: {nand_source}")
+            self._log(f"BOOT files saved to: {rawnand_folder}")
+
+            CustomDialog(self, title="Level 1 Complete",
+                       message=f"Level 1 process completed successfully!\n\n" +
+                               f"Updated RAWNAND: {nand_source}\n" +
+                               f"BOOT0: {boot0_output}\n" +
+                               f"BOOT1: {boot1_output}\n\n" +
+                               f"Your RAWNAND.bin has been fixed in place.\n" +
+                               f"Flash these files to your Switch using appropriate tools.")
+                
+        else:
+            # Online mode - flash back to physical eMMC
+            self._log(f"\n[STEP 6 & 7/8] Flashing modified SYSTEM back to eMMC...")
+            flash_cmd = [nx_exe, '-i', str(system_dec_path), '-o', nand_source, '-part=SYSTEM', '-e', '-keyset', keyset_path, 'FORCE']
+            if self._run_command(flash_cmd)[0] != 0:
+                return self._log("ERROR: Failed to flash SYSTEM partition back to eMMC.")
+            self._log("SUCCESS: SYSTEM partition has been restored.")
+
+            self._log(f"\n[STEP 8/8] Flashing BCPKG2 partitions...")
+            versioned_folder = next(d for d in emmchaccgen_out_dir.iterdir() if d.is_dir())
+            bcpkg_path = versioned_folder / "BCPKG2-1-Normal-Main"
+            if bcpkg_path.exists():
+                bcpkg_cmd = [nx_exe, '-i', str(bcpkg_path), '-o', nand_source, '-part=BCPKG2-1-Normal-Main', '-e', '-keyset', keyset_path, 'FORCE']
+                if self._run_command(bcpkg_cmd)[0] != 0:
+                    return self._log("ERROR: Failed to flash BCPKG2-1-Normal-Main partition.")
+                self._log("SUCCESS: BCPKG2-1-Normal-Main flashed")
+
+            # Final message for online mode
+            self._log("\n--- Level 1 System Restore completed successfully! ---")
+            self.button_states["level1"] = "completed"
+            self.button_states["copy_boot"] = "active"
+            self._validate_paths_and_update_buttons()
+            self._update_button_colors()
+            CustomDialog(self, title="Level 1 Complete", message="Level 1 System Restore completed successfully!\n\nYou can now copy boot files to your SD card.")
         
-        versioned_folder = next(d for d in emmchaccgen_out_dir.iterdir() if d.is_dir())
-        shutil.copy(versioned_folder / "BOOT0.bin", Path(temp_dir) / "BOOT0")
-        shutil.copy(versioned_folder / "BOOT1.bin", Path(temp_dir) / "BOOT1")
-        self._log(f"SUCCESS: BOOT0 and BOOT1 saved. Please flash them manually using Hekate.")
-        self._log("\n--- LEVEL 1 IN-PLACE RESTORE COMPLETE ---")
-
-        CustomDialog(self, title="Level 1 Complete", 
-            message="Level 1 restore completed successfully!\n\n" +
-                    "NEXT STEP: Disconnect USB cable, reconnect, and mount SD card in Hekate.\n" +
-                    "Then click 'Copy BOOT to SD' button.")
-
-        # Update button states AFTER user presses OK on dialog
         self.button_states["level1"] = "completed"
         self.button_states["copy_boot"] = "active"
+        self._validate_paths_and_update_buttons()
         self._update_button_colors()
 
     def _run_and_interrupt_flash(self, command, partition_name, target_mb):
@@ -3171,75 +3541,60 @@ class SwitchGuiApp(tk.Tk):
             self._log(f"FATAL ERROR during interruptible flash: {e}"); return -1
 
     def _run_level2_process(self, temp_dir):
-        self._log("\n--- WARNING ---")
-        self._log("The Level 2 process will write directly to your Switch's eMMC.")
+        if self.offline_mode.get():
+            self._log("\n--- OFFLINE MODE ---")
+            self._log("The Level 2 process will create a fixed RAWNAND.bin file.")
+        else:
+            self._log("\n--- WARNING ---")
+            self._log("The Level 2 process will write directly to your Switch's eMMC.")
 
         if not self._check_disk_space(60):
             return
 
-        self._log("\n[STEP 1/7] Please connect your Switch in Hekate's eMMC RAW GPP mode (Read-Only OFF).")
-        self._log("--- Detecting target eMMC...")
-        potential_drives = self._detect_switch_drives_wmi()
-        if not potential_drives:
-            CustomDialog(self, title="Error", message="No potential Switch eMMC drives found. Please ensure it is connected properly.")
+        # Get NAND source (file or device)
+        if not self.offline_mode.get():
+            self._log("\n[STEP 1/7] Please connect your Switch in Hekate's eMMC RAW GPP mode (Read-Only OFF).")
+        else:
+            self._log("\n[STEP 1/7] Using RAWNAND.bin file from settings...")
+
+        nand_source, source_type = self._get_nand_source()
+        if not nand_source:
             return
 
-        if len(potential_drives) > 1:
-            CustomDialog(self, title="Multiple Drives Found", message="Found multiple drives that could be a Switch eMMC. "
-                                                                    "For safety, please disconnect other USB drives and try again.")
-            return
-        
-        target_drive = potential_drives[0]
-        drive_path = target_drive['path']
-
-        # Store the drive type for later use when copying boot files
-        self.last_target_drive_type = target_drive.get('type', 'eMMC GPP')
-
-        # --- ADDED: Confirmation Pop-up for Level 2 ---
-        msg = (f"Found target {target_drive.get('type', 'eMMC')}:\n\nPath: {drive_path}\nSize: {target_drive['size']}\nModel: {target_drive['model']}\n\n"
-               "WARNING: This will start the Level 2 Full Rebuild process.\n"
-               "ALL USER DATA (saves, games) WILL BE PERMANENTLY ERASED.\n\nContinue?")
-        
-        dialog = CustomDialog(self, title="Confirm Level 2 Rebuild", message=msg, buttons="yesno")
-        if not dialog.result:
-            self._log("--- User cancelled Level 2 rebuild.")
-            return
-        # --- END OF ADDED CODE ---
-
-        self._log(f"--- SUCCESS: User confirmed eMMC at {drive_path}")
         nx_exe = self.paths['nxnandmanager'].get()
-        
+
         try:
             script_dir = Path(__file__).parent
         except NameError:
             script_dir = Path.cwd()
         partitions_folder = script_dir / "lib" / "NAND"
         keyset_path = self.paths['keys'].get()
-        
-        self._log("--- Acquiring PRODINFO...")
+
+        self._log(f"\n[STEP 2/7] Acquiring PRODINFO from {source_type}...")
         prodinfo_path = Path(temp_dir) / "PRODINFO"
-        dump_cmd = [nx_exe, '-i', drive_path, '-keyset', keyset_path, '-o', temp_dir, '-d', '-part=PRODINFO']
+        dump_cmd = [nx_exe, '-i', nand_source, '-keyset', keyset_path, '-o', temp_dir, '-d', '-part=PRODINFO']
         
         donor_prodinfo_used = False
         if self._run_command(dump_cmd)[0] != 0 or not prodinfo_path.exists():
-            self._log("--- INFO: Could not dump from eMMC. Falling back to donor PRODINFO file.")
+            self._log(f"--- INFO: Could not dump from {source_type}. Falling back to donor PRODINFO file.")
             donor_path = Path(self.paths['prodinfo'].get())
             if not donor_path.is_file():
-                self._log("ERROR: PRODINFO could not be dumped from eMMC and no donor file was provided.")
+                self._log(f"ERROR: PRODINFO could not be dumped from {source_type} and no donor file was provided.")
                 CustomDialog(self, title="PRODINFO Error", message="PRODINFO is not found or damaged. Please use Level 3 instead.")
                 return
             shutil.copy(donor_path, prodinfo_path)
             donor_prodinfo_used = True
-        else: self._log("--- SUCCESS: PRODINFO dumped from eMMC.")
-        
+        else:
+            self._log(f"--- SUCCESS: PRODINFO dumped from {source_type}.")
+
         with open(prodinfo_path, 'rb') as f:
             if f.read(4) != b'CAL0':
-                source = "donor file" if donor_prodinfo_used else "eMMC"
+                source = "donor file" if donor_prodinfo_used else source_type
                 self._log(f"ERROR: The PRODINFO from the {source} is invalid or encrypted (magic is not CAL0).")
                 CustomDialog(self, title="PRODINFO Error", message="PRODINFO is not found or damaged. Please use Level 3 instead.")
                 return
 
-        self._log(f"\n[STEP 2/7] Reading PRODINFO file...")
+        self._log(f"\n[STEP 3/7] Reading PRODINFO file...")
 
         # Check if console type override is enabled
         if self.override_console_type.get() and self.manual_console_type.get():
@@ -3264,7 +3619,7 @@ class SwitchGuiApp(tk.Tk):
             detected_model = model_map.get(product_model_id, "Unknown Mariko")
             self._log(f"SUCCESS: Detected model: {detected_model}")
 
-        self._log(f"\n[STEP 3/7] Generating boot files...")
+        self._log(f"\n[STEP 4/7] Generating boot files...")
         emmchaccgen_out_dir = Path(temp_dir) / "emmchaccgen_out"
         emmchaccgen_out_dir.mkdir()
         emmchaccgen_cmd = [self.paths['emmchaccgen'].get(), '--keys', keyset_path, '--fw', self.paths['firmware'].get()]
@@ -3276,7 +3631,7 @@ class SwitchGuiApp(tk.Tk):
             emmchaccgen_cmd.append('--no-autorcm')
         if self._run_command(emmchaccgen_cmd, cwd=str(emmchaccgen_out_dir))[0] != 0: return
 
-        self._log(f"\n[STEP 4/7] Preparing donor SYSTEM partition...")
+        self._log(f"\n[STEP 5/7] Preparing donor SYSTEM partition...")
         cmd = [self.paths['7z'].get(), 'x', str(partitions_folder / "SYSTEM.7z"), f'-o{temp_dir}', '-bsp1', '-y']
         if self._run_command_with_progress(cmd, "Extracting SYSTEM")[0] != 0: return
         system_dec_path = Path(temp_dir) / "SYSTEM.dec"
@@ -3303,51 +3658,113 @@ class SwitchGuiApp(tk.Tk):
             self._log(f"--- Dismounting drive...")
             self._run_command([self.paths['osfmount'].get(), '-D', '-m', drive_letter_str])
 
-        self._log(f"\n[STEP 5/7] Flashing all data partitions to eMMC...")
-        
-        flash_cmd = [nx_exe, '-i', str(prodinfo_path), '-o', drive_path, '-part=PRODINFO', '-e', '-keyset', keyset_path, 'FORCE']
-        if self._run_command(flash_cmd)[0] != 0: return
-        
-        flash_cmd = [nx_exe, '-i', str(system_dec_path), '-o', drive_path, '-part=SYSTEM', '-e', '-keyset', keyset_path, 'FORCE']
-        if self._run_command(flash_cmd)[0] != 0: return
+        if self.offline_mode.get():
+            # Offline mode - flash directly back to the original RAWNAND.bin
+            self._log(f"\n[STEP 6/7] Flashing all data partitions to RAWNAND.bin...")
 
-        partition_map = {"PRODINFOF": {"default": "PRODINFOF.7z"},
-                            "USER": {"OLED": "USER-64.7z", "default": "USER-32.7z"},
-                            "SAFE": {"default": "SAFE.7z"}}
-        for part_name, archive_map in partition_map.items():
-            archive_name = archive_map.get(detected_model, archive_map["default"])
-            cmd = [self.paths['7z'].get(), 'x', str(partitions_folder / archive_name), f'-o{temp_dir}', '-bsp1', '-y']
-            if self._run_command_with_progress(cmd, f"Extracting {part_name}")[0] == 0:
-                dec_file_path = Path(temp_dir) / f"{part_name}.dec"
-                flash_cmd = [nx_exe, '-i', str(dec_file_path), '-o', drive_path, f'-part={part_name}', '-e', '-keyset', keyset_path, 'FORCE']
-                if part_name == "USER" and not donor_prodinfo_used:
-                    if self._run_and_interrupt_flash(flash_cmd, "USER", 100) != 0: return
-                else:
-                    if self._run_command(flash_cmd)[0] != 0: return
-        
-        self._log("SUCCESS: All data partitions have been restored.")
+            self._log("--- Flashing PRODINFO...")
+            flash_cmd = [nx_exe, '-i', str(prodinfo_path), '-o', nand_source, '-part=PRODINFO', '-e', '-keyset', keyset_path, 'FORCE']
+            if self._run_command(flash_cmd)[0] != 0: return
 
-        self._log(f"\n[STEP 6/7] Flashing BCPKG2 partitions...")
-        versioned_folder = next(d for d in emmchaccgen_out_dir.iterdir() if d.is_dir())
-        bcpkg2_partitions = ["BCPKG2-1-Normal-Main", "BCPKG2-2-Normal-Sub", "BCPKG2-3-SafeMode-Main", "BCPKG2-4-SafeMode-Sub"]
-        for part_name in bcpkg2_partitions:
-            bcpkg2_file = versioned_folder / f"{part_name}.bin"
-            if not bcpkg2_file.exists(): return self._log(f"ERROR: {bcpkg2_file.name} not found.")
-            flash_cmd = [nx_exe, '-i', str(bcpkg2_file), '-o', drive_path, f'-part={part_name}', 'FORCE']
-            if self._run_command(flash_cmd)[0] != 0: return self._log(f"ERROR: Failed to flash {part_name}.")
-        self._log("SUCCESS: All BCPKG2 partitions have been restored.")
+            self._log("--- Flashing SYSTEM...")
+            flash_cmd = [nx_exe, '-i', str(system_dec_path), '-o', nand_source, '-part=SYSTEM', '-e', '-keyset', keyset_path, 'FORCE']
+            if self._run_command(flash_cmd)[0] != 0: return
 
-        self._log(f"\n[STEP 7/7] Saving BOOT0 & BOOT1 to output folder...")
-        
-        shutil.copy(versioned_folder / "BOOT0.bin", Path(temp_dir) / "BOOT0")
-        shutil.copy(versioned_folder / "BOOT1.bin", Path(temp_dir) / "BOOT1")
-        self._log(f"SUCCESS: BOOT0 and BOOT1 saved. Please flash them manually using Hekate.")
-        self._log("\n--- LEVEL 2 IN-PLACE REBUILD COMPLETE ---")
+            partition_map = {"PRODINFOF": {"default": "PRODINFOF.7z"},
+                                "USER": {"OLED": "USER-64.7z", "default": "USER-32.7z"},
+                                "SAFE": {"default": "SAFE.7z"}}
+            for part_name, archive_map in partition_map.items():
+                archive_name = archive_map.get(detected_model, archive_map["default"])
+                cmd = [self.paths['7z'].get(), 'x', str(partitions_folder / archive_name), f'-o{temp_dir}', '-bsp1', '-y']
+                if self._run_command_with_progress(cmd, f"Extracting {part_name}")[0] == 0:
+                    dec_file_path = Path(temp_dir) / f"{part_name}.dec"
+                    self._log(f"--- Flashing {part_name}...")
+                    flash_cmd = [nx_exe, '-i', str(dec_file_path), '-o', nand_source, f'-part={part_name}', '-e', '-keyset', keyset_path, 'FORCE']
+                    if part_name == "USER" and not donor_prodinfo_used:
+                        if self._run_and_interrupt_flash(flash_cmd, "USER", 100) != 0: return
+                    else:
+                        if self._run_command(flash_cmd)[0] != 0: return
 
-        CustomDialog(self, title="Level 2 Complete", 
-            message="Level 2 rebuild completed successfully!\n\n" +
-                    "NEXT STEP: Disconnect USB cable, reconnect, and mount SD card in Hekate.\n" +
-                    "Then click 'Copy BOOT to SD' button.")
+            self._log("SUCCESS: All data partitions have been restored in RAWNAND.bin.")
+
+            self._log(f"\n[STEP 7/7] Flashing BCPKG2 partitions...")
+            versioned_folder = next(d for d in emmchaccgen_out_dir.iterdir() if d.is_dir())
+            bcpkg2_partitions = ["BCPKG2-1-Normal-Main", "BCPKG2-2-Normal-Sub", "BCPKG2-3-SafeMode-Main", "BCPKG2-4-SafeMode-Sub"]
+            for part_name in bcpkg2_partitions:
+                bcpkg2_file = versioned_folder / f"{part_name}.bin"
+                if not bcpkg2_file.exists(): return self._log(f"ERROR: {bcpkg2_file.name} not found.")
+                flash_cmd = [nx_exe, '-i', str(bcpkg2_file), '-o', nand_source, f'-part={part_name}', 'FORCE']
+                if self._run_command(flash_cmd)[0] != 0: return self._log(f"ERROR: Failed to flash {part_name}.")
+            self._log("SUCCESS: All BCPKG2 partitions have been restored.")
+
+            # Save BOOT0 and BOOT1 to the same location as RAWNAND.bin
+            self._log(f"\n--- Saving BOOT0 & BOOT1 files...")
+            rawnand_folder = Path(nand_source).parent
+            boot0_output = rawnand_folder / "BOOT0.bin"
+            boot1_output = rawnand_folder / "BOOT1.bin"
+            shutil.copy2(versioned_folder / "BOOT0.bin", boot0_output)
+            shutil.copy2(versioned_folder / "BOOT1.bin", boot1_output)
+            self._log(f"SUCCESS: BOOT0 saved to {boot0_output}")
+            self._log(f"SUCCESS: BOOT1 saved to {boot1_output}")
+
+            self._log("\n--- LEVEL 2 OFFLINE REBUILD COMPLETE ---")
+            self._log(f"IMPORTANT: Your RAWNAND.bin has been rebuilt at: {nand_source}")
+            self._log(f"BOOT files saved to: {rawnand_folder}")
+
+            CustomDialog(self, title="Level 2 Complete",
+                       message=f"Level 2 rebuild completed successfully!\n\n" +
+                               f"Rebuilt RAWNAND: {nand_source}\n" +
+                               f"BOOT0: {boot0_output}\n" +
+                               f"BOOT1: {boot1_output}\n\n" +
+                               f"Your RAWNAND.bin has been completely rebuilt.\n" +
+                               f"Flash these files to your Switch using appropriate tools.")
+
+        else:
+            # Online mode - flash to physical eMMC
+            self._log(f"\n[STEP 6/7] Flashing all data partitions to eMMC...")
+
+            flash_cmd = [nx_exe, '-i', str(prodinfo_path), '-o', nand_source, '-part=PRODINFO', '-e', '-keyset', keyset_path, 'FORCE']
+            if self._run_command(flash_cmd)[0] != 0: return
+
+            flash_cmd = [nx_exe, '-i', str(system_dec_path), '-o', nand_source, '-part=SYSTEM', '-e', '-keyset', keyset_path, 'FORCE']
+            if self._run_command(flash_cmd)[0] != 0: return
+
+            partition_map = {"PRODINFOF": {"default": "PRODINFOF.7z"},
+                                "USER": {"OLED": "USER-64.7z", "default": "USER-32.7z"},
+                                "SAFE": {"default": "SAFE.7z"}}
+            for part_name, archive_map in partition_map.items():
+                archive_name = archive_map.get(detected_model, archive_map["default"])
+                cmd = [self.paths['7z'].get(), 'x', str(partitions_folder / archive_name), f'-o{temp_dir}', '-bsp1', '-y']
+                if self._run_command_with_progress(cmd, f"Extracting {part_name}")[0] == 0:
+                    dec_file_path = Path(temp_dir) / f"{part_name}.dec"
+                    flash_cmd = [nx_exe, '-i', str(dec_file_path), '-o', nand_source, f'-part={part_name}', '-e', '-keyset', keyset_path, 'FORCE']
+                    if part_name == "USER" and not donor_prodinfo_used:
+                        if self._run_and_interrupt_flash(flash_cmd, "USER", 100) != 0: return
+                    else:
+                        if self._run_command(flash_cmd)[0] != 0: return
+
+            self._log("SUCCESS: All data partitions have been restored.")
+
+            self._log(f"\n[STEP 7/7] Flashing BCPKG2 partitions...")
+            versioned_folder = next(d for d in emmchaccgen_out_dir.iterdir() if d.is_dir())
+            bcpkg2_partitions = ["BCPKG2-1-Normal-Main", "BCPKG2-2-Normal-Sub", "BCPKG2-3-SafeMode-Main", "BCPKG2-4-SafeMode-Sub"]
+            for part_name in bcpkg2_partitions:
+                bcpkg2_file = versioned_folder / f"{part_name}.bin"
+                if not bcpkg2_file.exists(): return self._log(f"ERROR: {bcpkg2_file.name} not found.")
+                flash_cmd = [nx_exe, '-i', str(bcpkg2_file), '-o', nand_source, f'-part={part_name}', 'FORCE']
+                if self._run_command(flash_cmd)[0] != 0: return self._log(f"ERROR: Failed to flash {part_name}.")
+            self._log("SUCCESS: All BCPKG2 partitions have been restored.")
+
+            self._log(f"\n--- Saving BOOT0 & BOOT1...")
+            shutil.copy(versioned_folder / "BOOT0.bin", Path(temp_dir) / "BOOT0")
+            shutil.copy(versioned_folder / "BOOT1.bin", Path(temp_dir) / "BOOT1")
+            self._log(f"SUCCESS: BOOT0 and BOOT1 saved. Please flash them manually using Hekate.")
+            self._log("\n--- LEVEL 2 IN-PLACE REBUILD COMPLETE ---")
+
+            CustomDialog(self, title="Level 2 Complete",
+                message="Level 2 rebuild completed successfully!\n\n" +
+                        "NEXT STEP: Disconnect USB cable, reconnect, and mount SD card in Hekate.\n" +
+                        "Then click 'Copy BOOT to SD' button.")
 
         # Update button states AFTER user presses OK on dialog
         self.button_states["level2"] = "completed"
