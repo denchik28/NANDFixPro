@@ -2877,8 +2877,8 @@ class SwitchGuiApp(tk.Tk):
 
             # Also save BOOT0 and BOOT1 to the same location
             self._log(f"\n[STEP 8/8] Saving BOOT0 & BOOT1 files...")
-            boot0_output = output_folder / "BOOT0.bin"
-            boot1_output = output_folder / "BOOT1.bin"
+            boot0_output = output_folder / "BOOT0"
+            boot1_output = output_folder / "BOOT1"
             shutil.copy2(versioned_folder / "BOOT0.bin", boot0_output)
             shutil.copy2(versioned_folder / "BOOT1.bin", boot1_output)
             self._log(f"SUCCESS: BOOT0 saved to {boot0_output}")
@@ -3469,8 +3469,8 @@ class SwitchGuiApp(tk.Tk):
             # Save BOOT0 and BOOT1 to the same location as RAWNAND.bin
             self._log(f"\n[STEP 8/8] Saving BOOT0 & BOOT1 files...")
             rawnand_folder = Path(nand_source).parent
-            boot0_output = rawnand_folder / "BOOT0.bin"
-            boot1_output = rawnand_folder / "BOOT1.bin"
+            boot0_output = rawnand_folder / "BOOT0"
+            boot1_output = rawnand_folder / "BOOT1"
             shutil.copy2(versioned_folder / "BOOT0.bin", boot0_output)
             shutil.copy2(versioned_folder / "BOOT1.bin", boot1_output)
             self._log(f"SUCCESS: BOOT0 saved to {boot0_output}")
@@ -3700,8 +3700,8 @@ class SwitchGuiApp(tk.Tk):
             # Save BOOT0 and BOOT1 to the same location as RAWNAND.bin
             self._log(f"\n--- Saving BOOT0 & BOOT1 files...")
             rawnand_folder = Path(nand_source).parent
-            boot0_output = rawnand_folder / "BOOT0.bin"
-            boot1_output = rawnand_folder / "BOOT1.bin"
+            boot0_output = rawnand_folder / "BOOT0"
+            boot1_output = rawnand_folder / "BOOT1"
             shutil.copy2(versioned_folder / "BOOT0.bin", boot0_output)
             shutil.copy2(versioned_folder / "BOOT1.bin", boot1_output)
             self._log(f"SUCCESS: BOOT0 saved to {boot0_output}")
