@@ -2541,6 +2541,31 @@ class SwitchGuiApp(tk.Tk):
     def _on_closing(self):
         """Handle application closing - clean up temp directory and temporary files."""
         try:
+            # Check if BOOT files are pending copy to SD card (only in online/live mode)
+            if (hasattr(self, 'last_output_dir') and
+                self.last_output_dir and
+                os.path.exists(self.last_output_dir) and
+                not self.offline_mode.get()):
+
+                # Check if BOOT files exist in temp directory
+                boot0_path = Path(self.last_output_dir) / "BOOT0"
+                boot1_path = Path(self.last_output_dir) / "BOOT1"
+
+                if boot0_path.exists() and boot1_path.exists():
+                    # BOOT files haven't been copied yet - warn the user
+                    msg = (f"BOOT files have not been copied to SD card yet!\n\n"
+                           f"Location: {self.last_output_dir}\n\n"
+                           f"If you close now, you'll need to re-run the repair process.\n\n"
+                           f"Do you want to close anyway?")
+
+                    dialog = CustomDialog(self, title="Warning: BOOT Files Not Copied",
+                                        message=msg, buttons="yesno")
+
+                    if not dialog.result:
+                        # User chose to cancel closing
+                        return
+
+            # User confirmed closing or BOOT files already copied
             # Clean up prod.keys and PRODINFO files (only in online mode - user's files in offline mode!)
             if not self.offline_mode.get():
                 try:
@@ -2557,7 +2582,7 @@ class SwitchGuiApp(tk.Tk):
                 except Exception as e:
                     pass  # Silent cleanup
 
-            # Clean up the last temp directory if it exists and wasn't copied to SD
+            # Clean up the last temp directory if it exists
             if hasattr(self, 'last_output_dir') and self.last_output_dir and os.path.exists(self.last_output_dir):
                 self._log(f"\nINFO: Cleaning up temporary directory on exit: {self.last_output_dir}")
                 shutil.rmtree(self.last_output_dir)
