@@ -3531,6 +3531,12 @@ class SwitchGuiApp(tk.Tk):
                     return self._log("ERROR: Failed to flash BCPKG2-1-Normal-Main partition.")
                 self._log("SUCCESS: BCPKG2-1-Normal-Main flashed")
 
+            # Copy BOOT files to temp directory for later SD card copying
+            self._log(f"\n--- Saving BOOT0 & BOOT1 to temp directory...")
+            shutil.copy2(versioned_folder / "BOOT0.bin", Path(temp_dir) / "BOOT0")
+            shutil.copy2(versioned_folder / "BOOT1.bin", Path(temp_dir) / "BOOT1")
+            self._log(f"SUCCESS: BOOT0 and BOOT1 saved to {temp_dir}")
+
             # Final message for online mode
             self._log("\n--- Level 1 System Restore completed successfully! ---")
             self.button_states["level1"] = "completed"
