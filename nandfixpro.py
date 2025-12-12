@@ -903,7 +903,7 @@ class SwitchGuiApp(tk.Tk):
         # Set up cleanup on exit
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
         
-    def _create_main_button_row(self, parent_frame, process_name, command, button_ref, level=None):
+    def _create_main_button_row(self, parent_frame, process_name, command, button_ref):
         """Creates the consistent row of main buttons for each tab."""
         button_frame = ttk.Frame(parent_frame)
 
@@ -919,13 +919,6 @@ class SwitchGuiApp(tk.Tk):
                             command=command, style="Disabled.TButton", state="disabled")
         button.pack(side=tk.LEFT, padx=10, ipady=5, ipadx=15)
         setattr(self, button_ref, button)
-
-        # Advanced USER fix button (Level 2 only, next to main button)
-        if level == 2:
-            advanced_user_button = ttk.Button(button_frame, text="Advanced: Fix USER Only",
-                                             command=self._start_user_fix_threaded, style="Disabled.TButton", state="disabled")
-            advanced_user_button.pack(side=tk.LEFT, padx=10, ipady=5, ipadx=15)
-            self.advanced_user_button = advanced_user_button
 
         # Copy BOOT files button (right) - Only in ONLINE mode
         if not self.offline_mode.get():
@@ -1789,14 +1782,14 @@ class SwitchGuiApp(tk.Tk):
         for key, label, type in paths:
             self._create_path_selector_row(input_frame, key, label, type)
 
-    def _create_standard_button_area(self, parent_frame, level_name, command, button_ref, level_num=None):
+    def _create_standard_button_area(self, parent_frame, level_name, command, button_ref):
         """Creates a standardized button area at a fixed grid row."""
         # This frame will now always be placed in row 4 of its parent
         button_area_frame = ttk.Frame(parent_frame)
         button_area_frame.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(20, 10))
 
         # Create the main button row inside this standardized area
-        button_frame = self._create_main_button_row(button_area_frame, level_name, command, button_ref, level=level_num)
+        button_frame = self._create_main_button_row(button_area_frame, level_name, command, button_ref)
         button_frame.pack(pady=5)
 
         return button_area_frame       
@@ -1861,7 +1854,7 @@ class SwitchGuiApp(tk.Tk):
         # Row 4: The main button area, now in a fixed position.
         self._create_standard_button_area(parent_frame, "Level 1",
                                           lambda: self._start_threaded_process("Level 1"),
-                                          "start_level1_button", level_num=1)
+                                          "start_level1_button")
         self._update_button_colors()
 
     def _setup_level2_tab(self, parent_frame):
@@ -1906,10 +1899,17 @@ class SwitchGuiApp(tk.Tk):
         spacer.grid(row=2, column=0, sticky="nsew")
         parent_frame.rowconfigure(2, weight=1)
 
-        # Row 3: Console type override checkbox
+        # Row 3: Advanced USER fix button and console type override checkbox
         advanced_frame = ttk.Frame(parent_frame)
         advanced_frame.grid(row=3, column=0, columnspan=3, pady=20)
 
+        # Advanced USER fix button (centered)
+        advanced_user_button = ttk.Button(advanced_frame, text="Advanced: Fix USER Only",
+                                         command=self._start_user_fix_threaded, style="Disabled.TButton", state="disabled")
+        advanced_user_button.pack(ipady=5, ipadx=15)
+        self.advanced_user_button = advanced_user_button
+
+        # Console type override checkbox below the advanced button
         override_checkbox = ttk.Checkbutton(
             advanced_frame,
             text="Override Console Type Detection",
@@ -1917,12 +1917,12 @@ class SwitchGuiApp(tk.Tk):
             command=self._on_override_toggle,
             style="Dark.TCheckbutton"
         )
-        override_checkbox.pack(anchor="center")
+        override_checkbox.pack(anchor="center", pady=(15, 0))
 
-        # Row 4: The main button area (Advanced USER fix button is now here, inline)
+        # Row 4: The main button area (without Advanced USER button, it's in Row 3)
         self._create_standard_button_area(parent_frame, "Level 2",
                                           lambda: self._start_threaded_process("Level 2"),
-                                          "start_level2_button", level_num=2)
+                                          "start_level2_button")
         self._update_button_colors()
 
     def _setup_level3_tab(self, parent_frame):
@@ -1976,7 +1976,7 @@ class SwitchGuiApp(tk.Tk):
         # Row 4: The main button area, in the same fixed position.
         self._create_standard_button_area(parent_frame, "Level 3",
                                           self._start_level3_threaded,
-                                          "start_level3_button", level_num=3)
+                                          "start_level3_button")
         self._update_button_colors()
         
 
