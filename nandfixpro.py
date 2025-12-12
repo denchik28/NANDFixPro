@@ -2946,6 +2946,7 @@ class SwitchGuiApp(tk.Tk):
 
             self.button_states["copy_boot"] = "active"
             self.button_states["level3"] = "completed"
+            self._validate_paths_and_update_buttons()
             self._update_button_colors()
 
             CustomDialog(self, title="Level 3 Complete",
@@ -3794,6 +3795,7 @@ class SwitchGuiApp(tk.Tk):
         # Update button states AFTER user presses OK on dialog
         self.button_states["level2"] = "completed"
         self.button_states["copy_boot"] = "active"
+        self._validate_paths_and_update_buttons()
         self._update_button_colors()
 
 if __name__ == "__main__":
