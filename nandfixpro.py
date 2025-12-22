@@ -3524,12 +3524,14 @@ class SwitchGuiApp(tk.Tk):
 
             self._log(f"\n[STEP 8/8] Flashing BCPKG2 partitions...")
             versioned_folder = next(d for d in emmchaccgen_out_dir.iterdir() if d.is_dir())
-            bcpkg_path = versioned_folder / "BCPKG2-1-Normal-Main"
-            if bcpkg_path.exists():
-                bcpkg_cmd = [nx_exe, '-i', str(bcpkg_path), '-o', nand_source, '-part=BCPKG2-1-Normal-Main', '-e', '-keyset', keyset_path, 'FORCE']
-                if self._run_command(bcpkg_cmd)[0] != 0:
-                    return self._log("ERROR: Failed to flash BCPKG2-1-Normal-Main partition.")
-                self._log("SUCCESS: BCPKG2-1-Normal-Main flashed")
+            bcpkg2_partitions = ["BCPKG2-1-Normal-Main", "BCPKG2-2-Normal-Sub", "BCPKG2-3-SafeMode-Main", "BCPKG2-4-SafeMode-Sub"]
+            for part_name in bcpkg2_partitions:
+                bcpkg2_file = versioned_folder / f"{part_name}.bin"
+                if bcpkg2_file.exists():
+                    flash_cmd = [nx_exe, '-i', str(bcpkg2_file), '-o', nand_source, f'-part={part_name}', 'FORCE']
+                    if self._run_command(flash_cmd)[0] != 0:
+                        return self._log(f"ERROR: Failed to flash {part_name}.")
+            self._log("SUCCESS: All BCPKG2 partitions have been restored.")
 
             # Copy BOOT files to temp directory for later SD card copying
             self._log(f"\n--- Saving BOOT0 & BOOT1 to temp directory...")
