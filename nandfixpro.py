@@ -7,6 +7,8 @@ import psutil
 import os
 import hashlib
 import struct
+import ctypes
+from ctypes import wintypes
 from tkinter import colorchooser
 
 
@@ -38,6 +40,13 @@ def force_remove_readonly(func, path, exc_info):
     if os.path.exists(path):
         os.chmod(path, stat.S_IWRITE)
         func(path)
+
+def set_app_user_model_id(app_id):
+    """Set the Windows App User Model ID to fix taskbar icon."""
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
+    except Exception:
+        pass  # Fails on Windows 7 or if already set
 
 def safe_remove_directory(directory_path):
     """Safely remove a directory, handling read-only files and permission issues."""
@@ -835,7 +844,9 @@ class ConsoleTypeDialog(tk.Toplevel):
 class SwitchGuiApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.version = "2.1.0"
+        self.iconbitmap('images/icon.ico')
+        set_app_user_model_id('com.nandfixpro.app')
+        self.version = "2.1.1"
         self.title(f"NAND Fix Pro v{self.version}")
         self.geometry("650x750") # Increased height to accommodate offline mode file selectors
         self.resizable(False, False)
@@ -1166,6 +1177,62 @@ class SwitchGuiApp(tk.Tk):
 
         self._log("--- No Switch SD card with Hekate hardware ID was found.")
         return None
+
+    def _detect_console_from_prodinfo(self, prodinfo_path, source_type):
+        """Detect console type from a PRODINFO file.
+
+        Args:
+            prodinfo_path: Path to the PRODINFO file
+            source_type: "donor" or "backup" - for logging purposes
+
+        Returns:
+            Tuple of (console_name, source_description) or (None, None) if detection fails
+        """
+        try:
+            with open(prodinfo_path, 'rb') as f:
+                # Try to validate CAL0 magic first (decrypted PRODINFO)
+                magic = f.read(4)
+                is_decrypted = (magic == b'CAL0')
+
+                if not is_decrypted and source_type == "donor":
+                    # Donor PRODINFO must be decrypted
+                    self._log(f"WARNING: Donor PRODINFO at {prodinfo_path} is not decrypted (no CAL0 magic)")
+                    return None, None
+
+                if not is_decrypted and source_type == "dumps":
+                    # dumps/prodinfo.dec should be decrypted
+                    self._log(f"WARNING: prodinfo.dec at {prodinfo_path} is not decrypted (no CAL0 magic)")
+                    return None, None
+
+                # Read product model ID from offset 0x3740
+                # This is in the plaintext header area, so it's readable even in encrypted PRODINFO
+                f.seek(0x3740)
+                product_model_id = int.from_bytes(f.read(4), byteorder='little')
+
+                model_map = {
+                    1: "Erista (V1 Patched/Unpatched)",
+                    3: "V2 (Mariko)",
+                    4: "Lite",
+                    6: "OLED"
+                }
+                console_name = model_map.get(product_model_id, "Unknown Model")
+
+                if source_type == "donor":
+                    source_desc = "donor PRODINFO"
+                    self._log(f"INFO: Detected console type from donor PRODINFO: {console_name}")
+                elif source_type == "dumps":
+                    source_desc = "dumps PRODINFO"
+                    self._log(f"INFO: Detected console type from dumps/prodinfo.dec: {console_name}")
+                else:
+                    source_desc = "backup PRODINFO"
+                    status = "encrypted" if not is_decrypted else "decrypted"
+                    self._log(f"INFO: Detected console type from {status} backup PRODINFO: {console_name}")
+
+                return console_name, source_desc
+
+        except Exception as e:
+            self._log(f"WARNING: Could not detect console type from {source_type} PRODINFO: {e}")
+            return None, None
 
     def _manual_select_sd_card(self):
         """Prompt user to manually select the SD card drive when automatic detection fails."""
@@ -1943,23 +2010,23 @@ class SwitchGuiApp(tk.Tk):
         # Dynamic description based on mode
         if self.offline_mode.get():
             info_text = ("OFFLINE MODE: Complete NAND reconstruction from scratch.\n\n"
-                         "• Reconstructs a complete NAND image from a donor PRODINFO and clean templates.\n"
-                         "• Automatically detects NAND size (32/64GB) from donor PRODINFO.\n"
+                         "• Reconstructs a complete NAND image from a PRODINFO and clean templates.\n"
+                         "• Automatically detects NAND size (32/64GB) from PRODINFO.\n"
                          "• Output: RAWNAND.bin + BOOT0.bin + BOOT1.bin")
             paths = [
                 ("keys", "prod.keys File:", "file"),
                 ("firmware", "Firmware Folder:", "folder"),
-                ("prodinfo", "Donor PRODINFO:", "file"),
+                ("prodinfo", "PRODINFO:", "file"),
                 ("output_l3", "Output Folder:", "folder"),
             ]
         else:
             info_text = ("ONLINE MODE: For total NAND loss, including PRODINFO. This is a last resort.\n\n"
-                         "• Reconstructs a complete NAND image from a donor PRODINFO file and clean templates.\n"
+                         "• Reconstructs a complete NAND image from a PRODINFO file and clean templates.\n"
                          "• The script automatically detects eMMC size (32/64GB) for the correct NAND skeleton.\n"
                          "• Connect your Switch in 'eMMC RAW GPP' mode (Read-Only OFF) and click Start.")
             paths = [
                 ("firmware", "Firmware Folder:", "folder"),
-                ("prodinfo", "Donor PRODINFO:", "file"),
+                ("prodinfo", "PRODINFO:", "file"),
             ]
 
         self._setup_tab_content(parent_frame, "Level 3: Description", info_text, paths)
@@ -2143,9 +2210,12 @@ class SwitchGuiApp(tk.Tk):
             restore_path = find_emmc_backup_folder(sd_drive)
             backup_folder_found = restore_path is not None
 
-            # Check for PRODINFO only if on Level 3 tab (since it's only relevant for Level 3)
+            # Check for PRODINFO and detect console type
+            # Level 3: PRODINFO for reconstruction
+            # Level 1/2: try to detect from dumps/prodinfo.dec (customized lockpick), otherwise will be detected during repair
             donor_prodinfo_path = None
             prodinfo_found = False
+            detected_console = None
 
             if is_level3:
                 possible_prodinfo_paths = [
@@ -2168,6 +2238,17 @@ class SwitchGuiApp(tk.Tk):
                             continue
 
                 prodinfo_found = donor_prodinfo_path is not None
+
+                # Detect console type from PRODINFO
+                if donor_prodinfo_path:
+                    detected_console, _ = self._detect_console_from_prodinfo(donor_prodinfo_path, "donor")
+            else:
+                # For Level 1/2, try to detect from dumps/prodinfo.dec (customized lockpick output)
+                if restore_path:
+                    dumps_folder = restore_path.parent / "dumps"
+                    prodinfo_dec = dumps_folder / "prodinfo.dec"
+                    if prodinfo_dec.exists():
+                        detected_console, _ = self._detect_console_from_prodinfo(prodinfo_dec, "dumps")
 
             # Build validation status message
             check_mark = "✓"
@@ -2226,8 +2307,8 @@ class SwitchGuiApp(tk.Tk):
                 self._log(f"SUCCESS: Donor PRODINFO imported from SD card: {donor_prodinfo_path.name}")
 
                 # Show popup asking if user wants to edit the PRODINFO
-                dialog = CustomDialog(self, title="Donor PRODINFO Detected",
-                                    message=f"Found donor PRODINFO file: {donor_prodinfo_path.name}\n\nWould you like to edit it (serial, colors, WiFi region) before using in Level 3?",
+                dialog = CustomDialog(self, title="PRODINFO Detected",
+                                    message=f"Found PRODINFO file: {donor_prodinfo_path.name}\n\nWould you like to edit it (serial, colors, WiFi region) before using in Level 3?",
                                     buttons="yesno")
 
                 if dialog.result:
@@ -2246,12 +2327,14 @@ class SwitchGuiApp(tk.Tk):
             
             # Create appropriate success message
             if prodinfo_found and is_level3:
-                message = ("Keys and donor PRODINFO obtained!\n\n"
-                        "Both prod.keys and donor PRODINFO were found and imported.\n\n"
+                console_info = f"\nConsole Type: {detected_console}" if detected_console else "\nConsole Type: Could not detect from PRODINFO"
+                message = (f"Keys and PRODINFO obtained!{console_info}\n\n"
+                        "Both prod.keys and PRODINFO were found and imported.\n\n"
                         "Please right-click the SD card drive in Windows Explorer and select 'Eject', "
                         "then connect your Switch in eMMC RAW GPP mode.")
             else:
-                message = ("Keys obtained!\n\n"
+                console_info = f"\nConsole Type: {detected_console}" if detected_console else ""
+                message = (f"Keys obtained!{console_info}\n\n"
                         f"prod.keys was imported successfully.\n\n"
                         "Please right-click the SD card drive in Windows Explorer and select 'Eject', "
                         "then connect your Switch in eMMC RAW GPP mode.")
@@ -2654,7 +2737,7 @@ class SwitchGuiApp(tk.Tk):
             prodinfo_donor_path = Path(self.paths['prodinfo'].get())
             if not prodinfo_donor_path.is_file():
                 self._log("ERROR: Donor PRODINFO file not found.")
-                CustomDialog(self, title="Error", message="Please select a donor PRODINFO file.")
+                CustomDialog(self, title="Error", message="Please select a PRODINFO file.")
                 return
 
             # Validate PRODINFO
@@ -3154,26 +3237,43 @@ class SwitchGuiApp(tk.Tk):
             self._save_config()
             self._validate_paths_and_update_buttons()
 
-            # Check if user selected a prodinfo file in Level 3 offline mode
-            if key == "prodinfo" and self.offline_mode.get():
+            # Check if user selected a prodinfo file in Level 3 (both online and offline mode)
+            if key == "prodinfo":
                 # Check if Level 3 tab is active
                 current_tab = self.tab_control.select()
                 level3_tab_id = self.tab_control.tabs()[2]  # Level 3 is the third tab (index 2)
 
                 if current_tab == level3_tab_id:
-                    # Validate that the prodinfo is decrypted
+                    # Validate that the prodinfo is decrypted and detect console type
                     try:
                         with open(path, 'rb') as f:
-                            if f.read(4) == b'CAL0':
-                                # Show popup asking if user wants to edit the PRODINFO
+                            magic = f.read(4)
+                            if magic == b'CAL0':
+                                f.seek(0x3740)
+                                product_model_id = int.from_bytes(f.read(4), byteorder='little')
+
+                                model_map = {
+                                    1: "Erista (V1 Patched/Unpatched)",
+                                    3: "V2 (Mariko)",
+                                    4: "Lite",
+                                    6: "OLED"
+                                }
+                                console_name = model_map.get(product_model_id, "Unknown Model")
+
+                                # Show popup with console type
                                 prodinfo_filename = os.path.basename(path)
-                                dialog = CustomDialog(self, title="Donor PRODINFO Selected",
-                                                    message=f"Selected donor PRODINFO file: {prodinfo_filename}\n\nWould you like to edit it (serial, colors, WiFi region) before using in Level 3?",
+                                dialog = CustomDialog(self, title="PRODINFO Selected",
+                                                    message=f"Selected: {prodinfo_filename}\n\nConsole Type: {console_name}\n\nWould you like to edit it (serial, colors, WiFi region) before using in Level 3?",
                                                     buttons="yesno")
 
                                 if dialog.result:
                                     # User wants to edit - open editor immediately after this function completes
                                     self.after(100, self._open_prodinfo_editor)  # Delay to ensure dialog cleanup
+                            else:
+                                # PRODINFO is not decrypted
+                                prodinfo_filename = os.path.basename(path)
+                                CustomDialog(self, title="Invalid PRODINFO",
+                                            message=f"The selected PRODINFO file ({prodinfo_filename}) is not decrypted.\n\nPlease select a decrypted PRODINFO with 'CAL0' header.")
                     except Exception as e:
                         # Silently ignore validation errors, they will be caught during the actual process
                         pass
