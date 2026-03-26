@@ -2980,7 +2980,8 @@ class SwitchGuiApp(tk.Tk):
             final_output = output_folder / "RAWNAND.bin"
 
             self._log(f"--- Copying complete NAND image to {final_output}...")
-            shutil.copy2(working_nand, final_output)
+            if not self._copy_with_progress(working_nand, final_output, "Saving NAND image"):
+                return
             self._log(f"SUCCESS: Complete NAND image saved to {final_output}")
 
             # Also save BOOT0 and BOOT1 to the same location
