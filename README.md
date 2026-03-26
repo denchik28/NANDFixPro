@@ -124,7 +124,7 @@ Getting started is designed to be as simple as possible.
 * **CRITICAL: Create a full NAND backup using Hekate before doing anything else.** This is your essential safety net and must be done regardless of which repair level you plan to use. Without this backup, you cannot recover if something goes wrong.
 * Get your unique console files. Use **Lockpick RCM** to dump your `prod.keys` file. **You must copy this file from your Switch's SD card to your computer**, as the tool needs it for all operations.
 * If you're performing a **Level 3: Complete Recovery**, you will also need a decrypted **donor** `PRODINFO` file. If you used the `prodinfo_gen` tool to create one, **ensure you copy this file to your computer as well**.
-* Prepare a USB cable to connect your Switch to your computer.
+* Prepare a USB cable to connect your Switch to your computer. **Use a USB 2.0 port** — connecting via USB 3.0 can cause instability and booting issues during eMMC access.
 
 ### 2. Connect and Configure with Hekate
 * Boot your Switch into **Hekate**.
@@ -185,6 +185,7 @@ This tool interacts directly with your console's internal memory (eMMC). While i
 
 -   **You are using this tool at your own risk.**
 -   Always make a full NAND backup with Hekate before attempting any repairs.
+-   **Always use a USB 2.0 port.** Using USB 3.0 can cause instability and booting issues during eMMC operations.
 -   The author is not responsible for any damage to your console.
 
 ---
