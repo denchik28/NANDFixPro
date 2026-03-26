@@ -3407,14 +3407,6 @@ class SwitchGuiApp(tk.Tk):
             import traceback
             self._log(traceback.format_exc())
             return False
-            
-        except Exception as e:
-            self._log(f"ERROR: Failed to update system partition. {e}")
-            import traceback
-            self._log(traceback.format_exc())
-            return False
-
-    # In class SwitchGuiApp:
 
     def _get_nand_source(self):
         """
