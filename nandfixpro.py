@@ -1952,12 +1952,12 @@ class SwitchGuiApp(tk.Tk):
 
         # Dynamic description based on mode
         if self.offline_mode.get():
-            info_text = ("OFFLINE MODE: Fixes a corrupt SYSTEM partition in a RAWNAND.bin file.\n\n"
+            info_text = ("OFFLINE MODE: Fixes a corrupt SYSTEM partition in a NAND file(s).\n\n"
                          "• Use this for software errors, failed updates, or boot issues.\n"
-                         "• The process reads PRODINFO and SYSTEM from your RAWNAND.bin backup.\n"
+                         "• The process reads PRODINFO and SYSTEM from your NAND backup.\n"
                          "• Output: RAWNAND_FIXED_L1.bin with preserved user data.")
             paths = [
-                ("rawnand", "RAWNAND.bin File:", "file"),
+                ("rawnand", "NAND File(s):", "file"),
                 ("keys", "prod.keys File:", "file"),
                 ("firmware", "Firmware Folder:", "folder"),
             ]
@@ -2015,12 +2015,12 @@ class SwitchGuiApp(tk.Tk):
 
         # Dynamic description based on mode
         if self.offline_mode.get():
-            info_text = ("OFFLINE MODE: Rebuilds NAND using clean donor partitions in a RAWNAND.bin file.\n\n"
+            info_text = ("OFFLINE MODE: Rebuilds NAND using clean donor partitions in a NAND file(s).\n\n"
                          "• Use this when multiple partitions are corrupt in your backup.\n"
-                         "• The process reads PRODINFO from your RAWNAND.bin, then flashes clean partitions.\n"
+                         "• The process reads PRODINFO from your NAND backup, then flashes clean partitions.\n"
                          "• Output: RAWNAND_FIXED_L2.bin (ALL USER DATA ERASED)")
             paths = [
-                ("rawnand", "RAWNAND.bin File:", "file"),
+                ("rawnand", "NAND File(s):", "file"),
                 ("keys", "prod.keys File:", "file"),
                 ("firmware", "Firmware Folder:", "folder"),
             ]
@@ -2772,13 +2772,9 @@ class SwitchGuiApp(tk.Tk):
             # Run the process
             self._run_level3_process(temp_dir)
 
-            # --- THIS IS THE FIX ---
-            # Save the successful output path for the copy button to use
             self.last_output_dir = temp_dir
-
-            if not self._split_nand_context:
-                self._log(f"INFO: BOOT files saved to: {temp_dir}")
-                self._log(f"INFO: Temp directory will be cleaned after copying BOOT files to SD.")
+            self._log(f"INFO: BOOT files saved to: {temp_dir}")
+            self._log(f"INFO: Temp directory will be cleaned after copying BOOT files to SD.")
 
         except Exception as e:
             self._log(f"An unexpected critical error occurred: {e}\n{traceback.format_exc()}")
@@ -3073,9 +3069,6 @@ class SwitchGuiApp(tk.Tk):
             self._log(f"BOOT files saved to: {output_folder}")
             self._log("Flash these files to your Switch using appropriate tools.")
 
-            # If source was split NAND, re-split the fixed output
-            self._resplit_if_needed(str(final_output), str(boot0_output), str(boot1_output), str(output_folder))
-
             self.button_states["level3"] = "completed"
             self._update_button_colors()
 
@@ -3084,7 +3077,6 @@ class SwitchGuiApp(tk.Tk):
                                 f"Complete NAND: {final_output}\n" +
                                 f"BOOT0: {boot0_output}\n" +
                                 f"BOOT1: {boot1_output}\n\n" +
-                                (f"Re-split output: {Path(str(output_folder)) / 'FIXED_emummc'}\n\n" if self._split_nand_context else "") +
                                 "Flash these files to your Switch using appropriate tools.")
 
         else:
@@ -3343,8 +3335,8 @@ class SwitchGuiApp(tk.Tk):
                         f"Available in temp: {avail_gb:.1f} GB\n\n"
                         f"NANDFixPro will:\n"
                         f"  1. Read & join all parts from source into temp\n"
-                        f"  2. Run Level 1 / 2 / 3 as normal\n"
-                        f"  3. Re-split the fixed NAND into a FIXED_emummc subfolder\n\n"
+                        f"  2. Run Level 1 / 2 as normal\n"
+                        f"  3. Re-split the fixed NAND into a joint_nand subfolder\n\n"
                         f"Continue with this split NAND source?"
                     )
                     dialog = CustomDialog(self, title="Split NAND Detected", message=msg, buttons="yesno")
@@ -3638,12 +3630,12 @@ class SwitchGuiApp(tk.Tk):
     def _resplit_if_needed(self, fixed_nand_path, boot0_src, boot1_src, temp_dir):
         """
         If a split NAND context is active, re-split the fixed NAND and write BOOT files
-        into a FIXED_emummc subfolder inside temp_dir. Cleans up the joined source file.
+        into a joint_nand subfolder inside temp_dir. Cleans up the joined source file.
         """
         if not self._split_nand_context:
             return
         context = self._split_nand_context
-        output_dir = Path(temp_dir) / "FIXED_emummc"
+        output_dir = Path(temp_dir) / "joint_nand"
         self._log(f"\n[POST-STEP] Re-splitting fixed NAND into {output_dir} ...")
         if not self._split_nand_output(fixed_nand_path, str(output_dir), context):
             return
@@ -3717,7 +3709,7 @@ class SwitchGuiApp(tk.Tk):
     def _run_level1_process(self, temp_dir):
         if self.offline_mode.get():
             self._log("\n--- OFFLINE MODE ---")
-            self._log("The Level 1 process will create a fixed RAWNAND.bin file.")
+            self._log("The Level 1 process will create a fixed NAND file.")
         else:
             self._log("\n--- WARNING ---")
             self._log("The Level 1 process will write directly to your Switch's eMMC.")
@@ -3729,7 +3721,7 @@ class SwitchGuiApp(tk.Tk):
         if not self.offline_mode.get():
             self._log("\n[STEP 1/8] Please connect your Switch in Hekate's eMMC RAW GPP mode (Read-Only OFF).")
         else:
-            self._log("\n[STEP 1/8] Using RAWNAND.bin file from settings...")
+            self._log("\n[STEP 1/8] Using NAND file(s) from settings...")
         
         nand_source, source_type = self._get_nand_source()
         if not nand_source:
@@ -3856,7 +3848,7 @@ class SwitchGuiApp(tk.Tk):
             self._log(f"SUCCESS: BOOT1 saved to {boot1_output}")
 
             self._log("\n--- Level 1 Offline System Restore completed successfully! ---")
-            self._log(f"IMPORTANT: Your RAWNAND.bin has been updated at: {nand_source}")
+            self._log(f"IMPORTANT: Your NAND file has been updated at: {nand_source}")
             self._log(f"BOOT files saved to: {rawnand_folder}")
 
             # If source was split NAND, re-split the fixed output
@@ -3864,12 +3856,12 @@ class SwitchGuiApp(tk.Tk):
 
             CustomDialog(self, title="Level 1 Complete",
                        message=f"Level 1 process completed successfully!\n\n" +
-                               f"Updated RAWNAND: {nand_source}\n" +
+                               f"Updated NAND: {nand_source}\n" +
                                f"BOOT0: {boot0_output}\n" +
                                f"BOOT1: {boot1_output}\n\n" +
-                               (f"Re-split output: {Path(temp_dir) / 'FIXED_emummc'}\n\n" if self._split_nand_context else "") +
+                               (f"Re-split output: {Path(temp_dir) / 'joint_nand'}\n\n" if self._split_nand_context else "") +
                                f"Flash these files to your Switch using appropriate tools.")
-                
+
         else:
             # Online mode - flash back to physical eMMC
             self._log(f"\n[STEP 6 & 7/8] Flashing modified SYSTEM back to eMMC...")
@@ -3933,7 +3925,7 @@ class SwitchGuiApp(tk.Tk):
     def _run_level2_process(self, temp_dir):
         if self.offline_mode.get():
             self._log("\n--- OFFLINE MODE ---")
-            self._log("The Level 2 process will create a fixed RAWNAND.bin file.")
+            self._log("The Level 2 process will create a fixed NAND file.")
         else:
             self._log("\n--- WARNING ---")
             self._log("The Level 2 process will write directly to your Switch's eMMC.")
@@ -3945,7 +3937,7 @@ class SwitchGuiApp(tk.Tk):
         if not self.offline_mode.get():
             self._log("\n[STEP 1/7] Please connect your Switch in Hekate's eMMC RAW GPP mode (Read-Only OFF).")
         else:
-            self._log("\n[STEP 1/7] Using RAWNAND.bin file from settings...")
+            self._log("\n[STEP 1/7] Using NAND file(s) from settings...")
 
         nand_source, source_type = self._get_nand_source()
         if not nand_source:
@@ -4098,7 +4090,7 @@ class SwitchGuiApp(tk.Tk):
             self._log(f"SUCCESS: BOOT1 saved to {boot1_output}")
 
             self._log("\n--- LEVEL 2 OFFLINE REBUILD COMPLETE ---")
-            self._log(f"IMPORTANT: Your RAWNAND.bin has been rebuilt at: {nand_source}")
+            self._log(f"IMPORTANT: Your NAND file has been rebuilt at: {nand_source}")
             self._log(f"BOOT files saved to: {rawnand_folder}")
 
             # If source was split NAND, re-split the fixed output
@@ -4106,11 +4098,11 @@ class SwitchGuiApp(tk.Tk):
 
             CustomDialog(self, title="Level 2 Complete",
                        message=f"Level 2 rebuild completed successfully!\n\n" +
-                               f"Rebuilt RAWNAND: {nand_source}\n" +
+                               f"Rebuilt NAND: {nand_source}\n" +
                                f"BOOT0: {boot0_output}\n" +
                                f"BOOT1: {boot1_output}\n\n" +
-                               (f"Re-split output: {Path(temp_dir) / 'FIXED_emummc'}\n\n" if self._split_nand_context else "") +
-                               f"Your RAWNAND.bin has been completely rebuilt.\n" +
+                               (f"Re-split output: {Path(temp_dir) / 'joint_nand'}\n\n" if self._split_nand_context else "") +
+                               f"Your NAND file has been completely rebuilt.\n" +
                                f"Flash these files to your Switch using appropriate tools.")
 
         else:
