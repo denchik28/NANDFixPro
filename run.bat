@@ -30,16 +30,21 @@ if not exist "%VENV_DIR%\Scripts\python.exe" (
         pause
         exit /b 1
     )
-    echo Installing dependencies...
-    "%VENV_DIR%\Scripts\pip.exe" install -r "%SCRIPT_DIR%requirements.txt" --quiet
-    if errorlevel 1 (
-        echo ERROR: Failed to install dependencies.
-        pause
-        exit /b 1
-    )
-    echo Setup complete.
-    echo.
 )
+
+REM --- Always ensure dependencies are installed ---
+echo Checking dependencies...
+"%VENV_DIR%\Scripts\pip.exe" install -r "%SCRIPT_DIR%requirements.txt" --quiet
+if errorlevel 1 (
+    echo.
+    echo ERROR: Failed to install one or more dependencies.
+    echo Please check your internet connection and try again.
+    echo If the problem persists, delete the "venv" folder and re-run this script.
+    pause
+    exit /b 1
+)
+echo.
+
 
 REM --- Launch NANDFixPro ---
 cd /d "%SCRIPT_DIR%"
