@@ -24,11 +24,6 @@ jobs:
     steps:
       - name: Post to X
         run: |
-          TITLE="${{ inputs.release_title || github.event.release.name }}"
-          NOTES="${{ inputs.release_notes || github.event.release.body }}"
-          TAG="${{ inputs.release_tag || github.event.release.tag_name }}"
-          URL="${{ github.server_url }}/${{ github.repository }}/releases/tag/$TAG"
-
           echo "Posting to X.com..."
 
           pip install requests-oauthlib --quiet
@@ -101,6 +96,6 @@ jobs:
           print(f"Tweet URL: https://x.com/user/status/{response.json()['data']['id']}")
           EOF
         env:
-          NOTES: $NOTES
-          TITLE: $TITLE
-          URL: $URL
+          TITLE: ${{ inputs.release_title || github.event.release.name }}
+          NOTES: ${{ inputs.release_notes || github.event.release.body }}
+          URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ inputs.release_tag || github.event.release.tag_name }}
