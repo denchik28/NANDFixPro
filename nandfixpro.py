@@ -743,10 +743,13 @@ class PRODINFOEditorDialog(tk.Toplevel):
             text_widget.config(state="disabled")
             
             # Close button
-            close_button = ttk.Button(main_frame, text="Close", 
+            close_button = ttk.Button(main_frame, text="Close",
                                     command=verify_dialog.destroy, style="Accent.TButton")
             close_button.pack(pady=5)
-            
+
+            verify_dialog.protocol("WM_DELETE_WINDOW", verify_dialog.destroy)
+            verify_dialog.wait_window(verify_dialog)
+
         except Exception as e:
             CustomDialog(self.parent, title="Verification Error", 
                         message=f"Failed to verify PRODINFO integrity:\n{e}")    
@@ -1241,7 +1244,7 @@ class SwitchGuiApp(tk.Tk):
 
         except ImportError:
             self._log("ERROR: The 'wmi' library is required for SD card detection.")
-            CustomDialog(self, title="Dependency Error", message="The 'wmi' library is not installed.")
+            self._dialog("Dependency Error", "The 'wmi' library is not installed.")
             return None
         except Exception as e:
             self._log(f"ERROR: A critical exception occurred during WMI SD card detection: {e}")
@@ -1354,7 +1357,7 @@ class SwitchGuiApp(tk.Tk):
                 import wmi
             except ImportError:
                 self._log("ERROR: The 'wmi' library is required. Please run 'pip install wmi' from a command prompt.")
-                CustomDialog(self, title="Dependency Error", message="The 'wmi' library is not installed.\nPlease run 'pip install wmi' in a command prompt.")
+                self._dialog("Dependency Error", "The 'wmi' library is not installed.\nPlease run 'pip install wmi' in a command prompt.")
                 return []
 
             c = wmi.WMI()
@@ -1516,12 +1519,12 @@ class SwitchGuiApp(tk.Tk):
             
             if free_gb < required_gb:
                 self._log(f"ERROR: Insufficient disk space on {temp_dir}. Need {required_gb}GB, have {free_gb:.1f}GB available")
-                CustomDialog(self, title="Insufficient Disk Space", 
-                            message=f"Not enough free space on the selected drive.\n\n" +
-                                    f"Drive: {temp_dir}\n" +
-                                    f"Required: {required_gb}GB\n" +
-                                    f"Available: {free_gb:.1f}GB\n\n" +
-                                    f"Please free up space or select a different temp directory in Settings.")
+                self._dialog("Insufficient Disk Space",
+                            f"Not enough free space on the selected drive.\n\n" +
+                            f"Drive: {temp_dir}\n" +
+                            f"Required: {required_gb}GB\n" +
+                            f"Available: {free_gb:.1f}GB\n\n" +
+                            f"Please free up space or select a different temp directory in Settings.")
                 return False
             
             self._log(f"--- Disk space check: {free_gb:.1f}GB available on {temp_dir}")
@@ -1717,7 +1720,9 @@ class SwitchGuiApp(tk.Tk):
         text_widget.config(state="disabled")
 
         help_win.transient(self)
-        help_win.grab_set()    
+        help_win.protocol("WM_DELETE_WINDOW", help_win.destroy)
+        help_win.grab_set()
+        help_win.wait_window(help_win)
 
     def _save_log(self):
         """Save the current log contents to a file."""
@@ -2156,7 +2161,7 @@ class SwitchGuiApp(tk.Tk):
 
                 nand_file_path = self.paths['rawnand'].get()
                 if not nand_file_path or not os.path.isfile(nand_file_path):
-                    CustomDialog(self, title="Error", message="RAWNAND.bin file not found. Please set the path in settings.")
+                    self._dialog("Error", "RAWNAND.bin file not found. Please set the path in settings.")
                     return
 
                 # Detect size from file
@@ -2173,11 +2178,11 @@ class SwitchGuiApp(tk.Tk):
 
                 potential_drives = self._detect_switch_drives_wmi()
                 if not potential_drives:
-                    CustomDialog(self, title="Error", message="No potential Switch eMMC drives found.")
+                    self._dialog("Error", "No potential Switch eMMC drives found.")
                     return
 
                 if len(potential_drives) > 1:
-                    CustomDialog(self, title="Multiple Drives Found", message="Found multiple drives that could be a Switch eMMC. Please disconnect other USB drives.")
+                    self._dialog("Multiple Drives Found", "Found multiple drives that could be a Switch eMMC. Please disconnect other USB drives.")
                     return
 
                 target_drive = potential_drives[0]
@@ -2189,8 +2194,7 @@ class SwitchGuiApp(tk.Tk):
                        "This procedure will alter and fix the USER partition only. All user data on this partition will be erased.\n\n"
                        "Are you sure you want to proceed?")
 
-                dialog = CustomDialog(self, title="Confirm USER Partition Fix", message=msg, buttons="yesno")
-                if not dialog.result:
+                if not self._dialog("Confirm USER Partition Fix", msg, buttons="yesno"):
                     self._log("--- User cancelled the operation.")
                     return
 
@@ -2241,13 +2245,13 @@ class SwitchGuiApp(tk.Tk):
             self._log("--- ADVANCED USER FIX FINISHED ---")
 
             if self.offline_mode.get():
-                CustomDialog(self, title="Process Complete",
-                    message="The USER partition in RAWNAND.bin was successfully fixed.\n\n" +
-                            "All previous user data has been erased.")
+                self._dialog("Process Complete",
+                    "The USER partition in RAWNAND.bin was successfully fixed.\n\n" +
+                    "All previous user data has been erased.")
             else:
-                CustomDialog(self, title="Process Complete",
-                    message="The USER partition was successfully fixed.\n\n" +
-                            "All previous user data has been erased.")
+                self._dialog("Process Complete",
+                    "The USER partition was successfully fixed.\n\n" +
+                    "All previous user data has been erased.")
 
         except Exception as e:
             self._log(f"An unexpected critical error occurred: {e}\n{traceback.format_exc()}")
@@ -2644,6 +2648,21 @@ class SwitchGuiApp(tk.Tk):
         if self._is_path_valid("prodinfo"):
             self._enable_prodinfo_menu()
 
+    def _dialog(self, title, message, buttons="ok"):
+        """Thread-safe wrapper for CustomDialog. Safe to call from worker threads."""
+        if threading.current_thread() is threading.main_thread():
+            d = CustomDialog(self, title=title, message=message, buttons=buttons)
+            return d.result
+        result_holder = [None]
+        done = threading.Event()
+        def _show():
+            d = CustomDialog(self, title=title, message=message, buttons=buttons)
+            result_holder[0] = d.result
+            done.set()
+        self.after(0, _show)
+        done.wait()
+        return result_holder[0]
+
     def _on_override_toggle(self):
         """Handle console type override checkbox toggle"""
         if self.override_console_type.get():
@@ -2808,7 +2827,7 @@ class SwitchGuiApp(tk.Tk):
             prodinfo_donor_path = Path(self.paths['prodinfo'].get())
             if not prodinfo_donor_path.is_file():
                 self._log("ERROR: Donor PRODINFO file not found.")
-                CustomDialog(self, title="Error", message="Please select a PRODINFO file.")
+                self._dialog("Error", "Please select a PRODINFO file.")
                 return
 
             # Validate PRODINFO
@@ -2816,7 +2835,7 @@ class SwitchGuiApp(tk.Tk):
                 if f.read(4) != b'CAL0':
                     error_msg = "The prodinfo is not correct, make sure it is decrypted!"
                     self._log(f"ERROR: PRODINFO magic 'CAL0' not found. {error_msg}")
-                    CustomDialog(self, title="Invalid PRODINFO", message=error_msg)
+                    self._dialog("Invalid PRODINFO", error_msg)
                     return
                 # Read model to determine size
                 f.seek(0x3740)
@@ -2836,12 +2855,12 @@ class SwitchGuiApp(tk.Tk):
             # Detect target eMMC
             potential_drives = self._detect_switch_drives_wmi()
             if not potential_drives:
-                CustomDialog(self, title="Error", message="No potential Switch eMMC drives found. Please ensure it is connected properly.")
+                self._dialog("Error", "No potential Switch eMMC drives found. Please ensure it is connected properly.")
                 return
 
             if len(potential_drives) > 1:
-                CustomDialog(self, title="Multiple Drives Found", message="Found multiple drives that could be a Switch eMMC. "
-                                                                        "For safety, please disconnect other USB drives of 32GB or 64GB and try again.")
+                self._dialog("Multiple Drives Found", "Found multiple drives that could be a Switch eMMC. "
+                                                     "For safety, please disconnect other USB drives of 32GB or 64GB and try again.")
                 return
 
             target_drive = potential_drives[0]
@@ -2856,8 +2875,7 @@ class SwitchGuiApp(tk.Tk):
                    "WARNING: ALL DATA ON THIS DRIVE WILL BE PERMANENTLY ERASED.\n\n"
                    "This will perform a complete Level 3 recovery. Continue?")
 
-            dialog = CustomDialog(self, title="Confirm Level 3 Recovery", message=msg, buttons="yesno")
-            if not dialog.result:
+            if not self._dialog("Confirm Level 3 Recovery", msg, buttons="yesno"):
                 self._log("--- User cancelled Level 3 recovery.")
                 return
 
@@ -2890,9 +2908,9 @@ class SwitchGuiApp(tk.Tk):
             if f.read(4) != b'CAL0':
                 error_msg = "The prodinfo is not correct, make sure it is decrypted!"
                 self._log(f"ERROR: PRODINFO magic 'CAL0' not found. {error_msg}")
-                CustomDialog(self, title="Invalid PRODINFO", message=error_msg)
+                self._dialog("Invalid PRODINFO", error_msg)
                 return
-        
+
         # Read model from PRODINFO
         with open(prodinfo_path, 'rb') as f:
             f.seek(0x3740)
@@ -3072,12 +3090,12 @@ class SwitchGuiApp(tk.Tk):
             self.button_states["level3"] = "completed"
             self._update_button_colors()
 
-            CustomDialog(self, title="Level 3 Complete",
-                        message=f"Level 3 offline recovery completed successfully!\n\n" +
-                                f"Complete NAND: {final_output}\n" +
-                                f"BOOT0: {boot0_output}\n" +
-                                f"BOOT1: {boot1_output}\n\n" +
-                                "Flash these files to your Switch using appropriate tools.")
+            self._dialog("Level 3 Complete",
+                         f"Level 3 offline recovery completed successfully!\n\n" +
+                         f"Complete NAND: {final_output}\n" +
+                         f"BOOT0: {boot0_output}\n" +
+                         f"BOOT1: {boot1_output}\n\n" +
+                         "Flash these files to your Switch using appropriate tools.")
 
         else:
             # Online mode - write to physical eMMC
@@ -3104,10 +3122,10 @@ class SwitchGuiApp(tk.Tk):
             self._validate_paths_and_update_buttons()
             self._update_button_colors()
 
-            CustomDialog(self, title="Level 3 Complete",
-                        message="Level 3 recovery completed successfully!\n\n" +
-                                "Don't forget to flash BOOT0 and BOOT1 using Hekate.\n\n" +
-                                "Your Switch should now boot normally.")
+            self._dialog("Level 3 Complete",
+                         "Level 3 recovery completed successfully!\n\n" +
+                         "Don't forget to flash BOOT0 and BOOT1 using Hekate.\n\n" +
+                         "Your Switch should now boot normally.")
     
     def _raw_copy_nand_to_emmc(self, source_nand, target_drive):
         """Raw copy donor NAND image to target eMMC using optimized partial write of 4GB."""
@@ -3176,8 +3194,8 @@ class SwitchGuiApp(tk.Tk):
 
         except PermissionError:
             self._log("ERROR: Permission denied. Please ensure the script is running as an Administrator.")
-            CustomDialog(self, title="Permission Error",
-                            message="Permission denied when trying to write to the drive. Please ensure the script is running with Administrator privileges.")
+            self._dialog("Permission Error",
+                         "Permission denied when trying to write to the drive. Please ensure the script is running with Administrator privileges.")
             return False
         except OSError as e:
             if e.errno == 9:  # Bad file descriptor
@@ -3186,16 +3204,16 @@ class SwitchGuiApp(tk.Tk):
                 self._log("2. Drive was disconnected or became unavailable")
                 self._log("3. USB controller/driver compatibility issue")
                 self._log("4. Windows blocked the operation")
-                CustomDialog(self, title="USB Write Error",
-                                message=f"Lost connection to the eMMC during write.\n\nPossible solutions:\n• Try a different USB port (preferably USB 2.0)\n• Use a different USB cable\n• Disable USB selective suspend in Windows power settings\n• Try on a different PC\n• Ensure Switch is in proper RCM mode with Hekate")
+                self._dialog("USB Write Error",
+                             f"Lost connection to the eMMC during write.\n\nPossible solutions:\n• Try a different USB port (preferably USB 2.0)\n• Use a different USB cable\n• Disable USB selective suspend in Windows power settings\n• Try on a different PC\n• Ensure Switch is in proper RCM mode with Hekate")
             elif e.errno == 22:  # Invalid argument
                 self._log(f"ERROR: Cannot access physical drive {target_drive}. This may be due to:")
                 self._log("1. Drive is mounted/in use by another process")
                 self._log("2. Drive access is blocked by antivirus software")
                 self._log("3. Insufficient permissions")
                 self._log("4. Device not properly connected")
-                CustomDialog(self, title="Drive Access Error",
-                                message=f"Cannot access the physical drive.\n\nPossible solutions:\n• Ensure no other programs are using the drive\n• Temporarily disable antivirus\n• Run as Administrator\n• Try disconnecting and reconnecting the Switch")
+                self._dialog("Drive Access Error",
+                             f"Cannot access the physical drive.\n\nPossible solutions:\n• Ensure no other programs are using the drive\n• Temporarily disable antivirus\n• Run as Administrator\n• Try disconnecting and reconnecting the Switch")
             else:
                 self._log(f"ERROR: OS error occurred: {e}")
             return False
@@ -3203,8 +3221,8 @@ class SwitchGuiApp(tk.Tk):
             self._log(f"ERROR: A critical error occurred during the raw copy: {e}")
             import traceback
             self._log(traceback.format_exc())
-            CustomDialog(self, title="Write Error",
-                            message=f"A critical error occurred while writing to the eMMC:\n\n{e}")
+            self._dialog("Write Error",
+                         f"A critical error occurred while writing to the eMMC:\n\n{e}")
             return False
 
     def _setup_prodinfo_menu(self, menubar):
@@ -3603,17 +3621,17 @@ class SwitchGuiApp(tk.Tk):
         temp_dir = self.paths['temp_directory'].get()
         if not temp_dir or not Path(temp_dir).exists():
             self._log("ERROR: Temp directory not set or not found.")
-            CustomDialog(self, title="Error", message="Please set a valid temp directory in Settings.")
+            self._dialog("Error", "Please set a valid temp directory in Settings.")
             return None, None
 
         avail = shutil.disk_usage(temp_dir).free
         needed = context['total_size'] * 2
         if avail < needed:
-            CustomDialog(self, title="Insufficient Space",
-                         message=f"Not enough space in temp directory.\n\n"
-                                 f"Needed: {needed / (1024**3):.1f} GB\n"
-                                 f"Available: {avail / (1024**3):.1f} GB\n\n"
-                                 f"Please free up space or change the temp directory.")
+            self._dialog("Insufficient Space",
+                         f"Not enough space in temp directory.\n\n"
+                         f"Needed: {needed / (1024**3):.1f} GB\n"
+                         f"Available: {avail / (1024**3):.1f} GB\n\n"
+                         f"Please free up space or change the temp directory.")
             return None, None
 
         joined_path = Path(temp_dir) / "RAWNAND_joined.bin"
@@ -3666,7 +3684,7 @@ class SwitchGuiApp(tk.Tk):
             rawnand_path = self.paths['rawnand'].get()
             if not rawnand_path or not Path(rawnand_path).exists():
                 self._log("ERROR: RAWNAND.bin file not found or not set")
-                CustomDialog(self, title="Error", message="Please select a valid RAWNAND.bin file in Settings.")
+                self._dialog("Error", "Please select a valid RAWNAND.bin file in Settings.")
                 return None, None
 
             # If split NAND was selected, join the parts first into temp
@@ -3680,12 +3698,12 @@ class SwitchGuiApp(tk.Tk):
             self._log("\n--- Detecting target eMMC...")
             potential_drives = self._detect_switch_drives_wmi()
             if not potential_drives:
-                CustomDialog(self, title="Error", message="No potential Switch eMMC drives found. Please ensure it is connected properly.")
+                self._dialog("Error", "No potential Switch eMMC drives found. Please ensure it is connected properly.")
                 return None, None
 
             if len(potential_drives) > 1:
-                CustomDialog(self, title="Multiple Drives Found", message="Found multiple drives that could be a Switch eMMC. "
-                                                                        "For safety, please disconnect other USB drives and try again.")
+                self._dialog("Multiple Drives Found", "Found multiple drives that could be a Switch eMMC. "
+                                                     "For safety, please disconnect other USB drives and try again.")
                 return None, None
             
             target_drive = potential_drives[0]
@@ -3698,8 +3716,7 @@ class SwitchGuiApp(tk.Tk):
             msg = (f"Found target {target_drive.get('type', 'eMMC')}:\n\nPath: {drive_path}\nSize: {target_drive['size']}\nModel: {target_drive['model']}\n\n"
                    "Continue?")
             
-            dialog = CustomDialog(self, title="Confirm Target", message=msg, buttons="yesno")
-            if not dialog.result:
+            if not self._dialog("Confirm Target", msg, buttons="yesno"):
                 self._log("--- User cancelled operation.")
                 return None, None
             
@@ -3736,13 +3753,13 @@ class SwitchGuiApp(tk.Tk):
         
         if self._run_command(dump_cmd)[0] != 0 or not prodinfo_path.exists():
             self._log(f"ERROR: Failed to dump or decrypt PRODINFO from the {source_type}. It may be corrupt.")
-            CustomDialog(self, title="PRODINFO Error", message="PRODINFO is not found or damaged. Please use Level 2 or Level 3 instead.")
+            self._dialog("PRODINFO Error", "PRODINFO is not found or damaged. Please use Level 3 instead.")
             return
 
         with open(prodinfo_path, 'rb') as f:
             if f.read(4) != b'CAL0':
                 self._log(f"ERROR: The PRODINFO dumped from the {source_type} is invalid or encrypted (magic is not CAL0).")
-                CustomDialog(self, title="PRODINFO Error", message="PRODINFO is not found or damaged. Please use Level 2 or Level 3 instead.")
+                self._dialog("PRODINFO Error", "PRODINFO is not found or damaged. Please use Level 3 instead.")
                 return
 
         self._log("SUCCESS: PRODINFO is valid and decrypted.")
@@ -3854,13 +3871,13 @@ class SwitchGuiApp(tk.Tk):
             # If source was split NAND, re-split the fixed output
             self._resplit_if_needed(nand_source, boot0_output, boot1_output, temp_dir)
 
-            CustomDialog(self, title="Level 1 Complete",
-                       message=f"Level 1 process completed successfully!\n\n" +
-                               f"Updated NAND: {nand_source}\n" +
-                               f"BOOT0: {boot0_output}\n" +
-                               f"BOOT1: {boot1_output}\n\n" +
-                               (f"Re-split output: {Path(temp_dir) / 'joint_nand'}\n\n" if self._split_nand_context else "") +
-                               f"Flash these files to your Switch using appropriate tools.")
+            self._dialog("Level 1 Complete",
+                         f"Level 1 process completed successfully!\n\n" +
+                         f"Updated NAND: {nand_source}\n" +
+                         f"BOOT0: {boot0_output}\n" +
+                         f"BOOT1: {boot1_output}\n\n" +
+                         (f"Re-split output: {Path(temp_dir) / 'joint_nand'}\n\n" if self._split_nand_context else "") +
+                         f"Flash these files to your Switch using appropriate tools.")
 
         else:
             # Online mode - flash back to physical eMMC
@@ -3893,7 +3910,7 @@ class SwitchGuiApp(tk.Tk):
             self.button_states["copy_boot"] = "active"
             self._validate_paths_and_update_buttons()
             self._update_button_colors()
-            CustomDialog(self, title="Level 1 Complete", message="Level 1 System Restore completed successfully!\n\nYou can now copy boot files to your SD card.")
+            self._dialog("Level 1 Complete", "Level 1 System Restore completed successfully!\n\nYou can now copy boot files to your SD card.")
         
         self.button_states["level1"] = "completed"
         self.button_states["copy_boot"] = "active"
@@ -3962,7 +3979,7 @@ class SwitchGuiApp(tk.Tk):
             donor_path = Path(self.paths['prodinfo'].get())
             if not donor_path.is_file():
                 self._log(f"ERROR: PRODINFO could not be dumped from {source_type} and no donor file was provided.")
-                CustomDialog(self, title="PRODINFO Error", message="PRODINFO is not found or damaged. Please use Level 3 instead.")
+                self._dialog("PRODINFO Error", "PRODINFO is not found or damaged. Please use Level 3 instead.")
                 return
             shutil.copy(donor_path, prodinfo_path)
             donor_prodinfo_used = True
@@ -3973,7 +3990,7 @@ class SwitchGuiApp(tk.Tk):
             if f.read(4) != b'CAL0':
                 source = "donor file" if donor_prodinfo_used else source_type
                 self._log(f"ERROR: The PRODINFO from the {source} is invalid or encrypted (magic is not CAL0).")
-                CustomDialog(self, title="PRODINFO Error", message="PRODINFO is not found or damaged. Please use Level 3 instead.")
+                self._dialog("PRODINFO Error", "PRODINFO is not found or damaged. Please use Level 3 instead.")
                 return
 
         self._log(f"\n[STEP 3/7] Reading PRODINFO file...")
@@ -4096,14 +4113,14 @@ class SwitchGuiApp(tk.Tk):
             # If source was split NAND, re-split the fixed output
             self._resplit_if_needed(nand_source, boot0_output, boot1_output, temp_dir)
 
-            CustomDialog(self, title="Level 2 Complete",
-                       message=f"Level 2 rebuild completed successfully!\n\n" +
-                               f"Rebuilt NAND: {nand_source}\n" +
-                               f"BOOT0: {boot0_output}\n" +
-                               f"BOOT1: {boot1_output}\n\n" +
-                               (f"Re-split output: {Path(temp_dir) / 'joint_nand'}\n\n" if self._split_nand_context else "") +
-                               f"Your NAND file has been completely rebuilt.\n" +
-                               f"Flash these files to your Switch using appropriate tools.")
+            self._dialog("Level 2 Complete",
+                         f"Level 2 rebuild completed successfully!\n\n" +
+                         f"Rebuilt NAND: {nand_source}\n" +
+                         f"BOOT0: {boot0_output}\n" +
+                         f"BOOT1: {boot1_output}\n\n" +
+                         (f"Re-split output: {Path(temp_dir) / 'joint_nand'}\n\n" if self._split_nand_context else "") +
+                         f"Your NAND file has been completely rebuilt.\n" +
+                         f"Flash these files to your Switch using appropriate tools.")
 
         else:
             # Online mode - flash to physical eMMC
@@ -4147,10 +4164,10 @@ class SwitchGuiApp(tk.Tk):
             self._log(f"SUCCESS: BOOT0 and BOOT1 saved. Please flash them manually using Hekate.")
             self._log("\n--- LEVEL 2 IN-PLACE REBUILD COMPLETE ---")
 
-            CustomDialog(self, title="Level 2 Complete",
-                message="Level 2 rebuild completed successfully!\n\n" +
-                        "NEXT STEP: Disconnect USB cable, reconnect, and mount SD card in Hekate.\n" +
-                        "Then click 'Copy BOOT to SD' button.")
+            self._dialog("Level 2 Complete",
+                         "Level 2 rebuild completed successfully!\n\n" +
+                         "NEXT STEP: Disconnect USB cable, reconnect, and mount SD card in Hekate.\n" +
+                         "Then click 'Copy BOOT to SD' button.")
 
         # Update button states AFTER user presses OK on dialog
         self.button_states["level2"] = "completed"
