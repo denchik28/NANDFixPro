@@ -1351,6 +1351,80 @@ class SwitchGuiApp(tk.Tk):
         self._log(f"--- SUCCESS: Manually selected SD card validated at: {sd_path}")
         return sd_path
 
+    def _get_disk_size_bytes(self, device_path):
+        """Query raw disk size via IOCTL when WMI returns None for disk.Size.
+        Uses IOCTL_DISK_GET_LENGTH_INFO (0x0007405C) with a ctypes fallback to
+        IOCTL_DISK_GET_DRIVE_GEOMETRY_EX (0x000700A0).
+        Returns size in bytes, or None on failure."""
+        import ctypes
+        import ctypes.wintypes
+
+        GENERIC_READ = 0x80000000
+        FILE_SHARE_READ = 0x00000001
+        FILE_SHARE_WRITE = 0x00000002
+        OPEN_EXISTING = 3
+        INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+        IOCTL_DISK_GET_LENGTH_INFO = 0x0007405C
+        IOCTL_DISK_GET_DRIVE_GEOMETRY_EX = 0x000700A0
+
+        kernel32 = ctypes.windll.kernel32
+
+        handle = kernel32.CreateFileW(
+            device_path,
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            0,
+            None
+        )
+        if handle == INVALID_HANDLE_VALUE:
+            self._log(f"WARNING: Could not open {device_path} for IOCTL size query (err={kernel32.GetLastError()})")
+            return None
+
+        try:
+            # Try IOCTL_DISK_GET_LENGTH_INFO first
+            length_info = ctypes.c_int64(0)
+            bytes_returned = ctypes.wintypes.DWORD(0)
+            ok = kernel32.DeviceIoControl(
+                handle,
+                IOCTL_DISK_GET_LENGTH_INFO,
+                None, 0,
+                ctypes.byref(length_info), ctypes.sizeof(length_info),
+                ctypes.byref(bytes_returned),
+                None
+            )
+            if ok and length_info.value > 0:
+                return length_info.value
+
+            # Fallback: IOCTL_DISK_GET_DRIVE_GEOMETRY_EX
+            class DISK_GEOMETRY_EX(ctypes.Structure):
+                _fields_ = [
+                    ("Cylinders", ctypes.c_int64),
+                    ("MediaType", ctypes.c_uint),
+                    ("TracksPerCylinder", ctypes.c_ulong),
+                    ("SectorsPerTrack", ctypes.c_ulong),
+                    ("BytesPerSector", ctypes.c_ulong),
+                    ("DiskSize", ctypes.c_int64),
+                    ("Data", ctypes.c_byte * 1),
+                ]
+            geo = DISK_GEOMETRY_EX()
+            ok = kernel32.DeviceIoControl(
+                handle,
+                IOCTL_DISK_GET_DRIVE_GEOMETRY_EX,
+                None, 0,
+                ctypes.byref(geo), ctypes.sizeof(geo),
+                ctypes.byref(bytes_returned),
+                None
+            )
+            if ok and geo.DiskSize > 0:
+                return geo.DiskSize
+
+            self._log(f"WARNING: Both IOCTL size queries failed for {device_path}")
+            return None
+        finally:
+            kernel32.CloseHandle(handle)
+
     def _detect_switch_drives_wmi(self):
             self._log("--- Detecting Switch eMMC/emuMMC using specific hardware IDs...")
             try:
@@ -1373,21 +1447,30 @@ class SwitchGuiApp(tk.Tk):
                 is_emummc_raw = "VEN_HEKATE" in pnp_id and "PROD_SD_GPP" in pnp_id
 
                 if is_emmc or is_emummc_raw:
-                    try:
-                        size_gb = int(disk.Size) / (1024**3)
-                        drive_type = "eMMC GPP" if is_emmc else "emuMMC Raw (SD GPP)"
-                        drive_info = {
-                            "path": disk.DeviceID,
-                            "size": f"{size_gb:.2f} GB",
-                            "size_gb": size_gb,
-                            "model": disk.Model,
-                            "type": drive_type
-                        }
-                        potential_drives.append(drive_info)
-                        self._log(f"--- Found Switch {drive_type} drive: {drive_info['path']} ({drive_info['size']})")
-                    except Exception as e:
-                        self._log(f"WARNING: Found Hekate device but could not get its size. Error: {e}")
-                        continue # Skip if size calculation fails
+                    drive_type = "eMMC GPP" if is_emmc else "emuMMC Raw (SD GPP)"
+                    # disk.Size can be None when Windows has auto-mounted partitions on the
+                    # drive (common when Hekate GPP is connected and Windows assigns it a
+                    # volume). Fall back to a direct IOCTL query on the physical drive path.
+                    size_bytes = int(disk.Size) if disk.Size else None
+                    if size_bytes is None:
+                        self._log(f"--- WMI returned no size for {disk.DeviceID}, querying via IOCTL...")
+                        size_bytes = self._get_disk_size_bytes(disk.DeviceID)
+                    if size_bytes and size_bytes > 0:
+                        size_gb = size_bytes / (1024**3)
+                        size_str = f"{size_gb:.2f} GB"
+                    else:
+                        size_gb = 0.0
+                        size_str = "Unknown size"
+                        self._log(f"WARNING: Could not determine size for {disk.DeviceID} — including drive anyway")
+                    drive_info = {
+                        "path": disk.DeviceID,
+                        "size": size_str,
+                        "size_gb": size_gb,
+                        "model": disk.Model,
+                        "type": drive_type
+                    }
+                    potential_drives.append(drive_info)
+                    self._log(f"--- Found Switch {drive_type} drive: {drive_info['path']} ({drive_info['size']})")
 
             if not potential_drives:
                 self._log("--- No Switch eMMC/emuMMC GPP drive with Hekate hardware ID was found.")
