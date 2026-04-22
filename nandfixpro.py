@@ -3859,7 +3859,10 @@ class SwitchGuiApp(tk.Tk):
         else:
             self._log("\n--- WARNING ---")
             self._log("The Level 1 process will write directly to your Switch's eMMC.")
-        
+
+        if not self._check_disk_space(60):
+            return
+
         # Get NAND source (file or device)
         if not self.offline_mode.get():
             self._log("\n[STEP 1/8] Please connect your Switch in Hekate's eMMC RAW GPP mode (Read-Only OFF).")
@@ -3868,15 +3871,6 @@ class SwitchGuiApp(tk.Tk):
         
         nand_source, source_type = self._get_nand_source()
         if not nand_source:
-            return
-
-        nand_size_gb = self._estimate_nand_size_gb(nand_source, source_type)
-        required_space = self._required_temp_space_gb(nand_size_gb)
-        if nand_size_gb is not None:
-            self._log(f"--- Detected NAND size: {nand_size_gb:.1f}GB. Required temp free space: {required_space}GB.")
-        else:
-            self._log(f"--- Could not determine NAND size. Using default required temp free space: {required_space}GB.")
-        if not self._check_disk_space(required_space):
             return
 
         nx_exe = self.paths['nxnandmanager'].get()
