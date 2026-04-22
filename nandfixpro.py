@@ -1587,6 +1587,58 @@ class SwitchGuiApp(tk.Tk):
         if not path_str:
             return False
         return Path(path_str).exists()
+
+    def _get_app_base_dir(self):
+        """Return the actual app directory (stable for both script and packaged exe)."""
+        if getattr(sys, "frozen", False):
+            return Path(sys.executable).resolve().parent
+        try:
+            return Path(__file__).resolve().parent
+        except NameError:
+            return Path.cwd().resolve()
+
+    def _get_partitions_folder(self):
+        """Resolve donor NAND partitions folder from settings with a safe fallback."""
+        configured_path = self.paths['partitions_folder'].get().strip()
+        if configured_path:
+            partitions_folder = Path(configured_path)
+            if partitions_folder.is_dir():
+                return partitions_folder
+            self._log(f"ERROR: Partitions folder path is invalid: {partitions_folder}")
+            return None
+
+        fallback_folder = self._get_app_base_dir() / "lib" / "NAND"
+        if fallback_folder.is_dir():
+            self._log(f"WARNING: Partitions folder not set, using fallback: {fallback_folder}")
+            return fallback_folder
+
+        self._log("ERROR: Partitions folder is not configured and fallback lib/NAND was not found.")
+        return None
+
+    def _estimate_nand_size_gb(self, nand_source, source_type):
+        """Estimate NAND source size in GB from file or physical device path."""
+        try:
+            if source_type == 'file':
+                source_path = Path(nand_source)
+                if source_path.is_file():
+                    return source_path.stat().st_size / (1024**3)
+            elif source_type == 'device':
+                size_bytes = self._get_disk_size_bytes(nand_source)
+                if size_bytes and size_bytes > 0:
+                    return size_bytes / (1024**3)
+        except Exception as e:
+            self._log(f"WARNING: Could not estimate NAND size for {nand_source}: {e}")
+        return None
+
+    def _required_temp_space_gb(self, nand_size_gb=None):
+        """
+        Required free temp space:
+        - 32GB NAND class -> 64GB free
+        - 64GB NAND class (OLED) -> 128GB free
+        """
+        if nand_size_gb is not None and nand_size_gb > 40:
+            return 128
+        return 64
     
     def _check_disk_space(self, required_gb=60):
         try:
@@ -1758,14 +1810,8 @@ class SwitchGuiApp(tk.Tk):
     def _show_usage_guide_window(self):
         """Creates a new window and displays the contents of usage.txt."""
         try:
-            # Determine the path to the usage guide
-            try:
-                # Path when running as a script
-                base_path = Path(__file__).parent
-            except NameError:
-                # Path when running as a frozen executable (PyInstaller)
-                base_path = Path(sys.executable).parent
-            
+            # Determine the path to the usage guide from the app folder
+            base_path = self._get_app_base_dir()
             guide_path = base_path / "lib" / "docs" / "usage.txt"
 
             if guide_path.is_file():
@@ -1951,8 +1997,7 @@ class SwitchGuiApp(tk.Tk):
         self._validate_paths_and_update_buttons()               
 
     def _auto_detect_paths(self):
-        try: script_dir = Path(__file__).parent
-        except NameError: script_dir = Path.cwd()
+        script_dir = self._get_app_base_dir()
         
         osfmount_path = Path("C:/Program Files/OSFMount/OSFMount.com")
         if osfmount_path.is_file(): self.paths["osfmount"].set(str(osfmount_path.resolve()))
@@ -2286,11 +2331,10 @@ class SwitchGuiApp(tk.Tk):
 
             # STEP 2: Extract the correct USER partition
             self._log("\n[STEP 2/4] Preparing donor USER partition...")
-            try:
-                script_dir = Path(__file__).parent
-            except NameError:
-                script_dir = Path.cwd()
-            partitions_folder = script_dir / "lib" / "NAND"
+            partitions_folder = self._get_partitions_folder()
+            if not partitions_folder:
+                self._dialog("Error", "NAND archive folder not found. Please set 'Partitions Folder (NAND)...' in Settings.")
+                return
 
             user_archive = "USER-64.7z" if target_size_gb > 40 else "USER-32.7z"
 
@@ -2679,12 +2723,9 @@ class SwitchGuiApp(tk.Tk):
         Automatically detect and extract the appropriate donor NAND based on eMMC size.
         Returns the path to the extracted donor NAND image.
         """
-        try:
-            script_dir = Path(__file__).parent
-        except NameError:
-            script_dir = Path.cwd()
-        
-        nand_lib_dir = script_dir / "lib" / "NAND"
+        nand_lib_dir = self._get_partitions_folder()
+        if not nand_lib_dir:
+            return None
         
         if target_size_gb > 40:
             donor_archive, donor_bin_name, size = (nand_lib_dir / "donor64.7z", "rawnand64.bin", "64GB")
@@ -2900,9 +2941,6 @@ class SwitchGuiApp(tk.Tk):
             self._log("Level 3 will completely overwrite your Switch's eMMC with a reconstructed NAND.")
             self._log("This is irreversible. Ensure you have backups and a stable connection.")
 
-        if not self._check_disk_space(60):
-            return
-
         # Determine target size for offline mode or get from physical eMMC
         if self.offline_mode.get():
             self._log("\n[STEP 1/8] Determining NAND size from donor PRODINFO...")
@@ -2963,6 +3001,11 @@ class SwitchGuiApp(tk.Tk):
                 return
 
             self._log(f"SUCCESS: User confirmed target eMMC at {target_path} ({target_drive['size']})")
+
+        required_space = self._required_temp_space_gb(target_size_gb)
+        self._log(f"--- Target NAND size: {target_size_gb:.1f}GB. Required temp free space: {required_space}GB.")
+        if not self._check_disk_space(required_space):
+            return
         
         self._log(f"\n[STEP 2/8] Preparing donor NAND skeleton...")
 
@@ -3028,7 +3071,10 @@ class SwitchGuiApp(tk.Tk):
         
         self._log(f"\n[STEP 5/8] Preparing all partition data from donor archives...")
         nx_exe = self.paths['nxnandmanager'].get()
-        partitions_folder = Path(self.paths['partitions_folder'].get())
+        partitions_folder = self._get_partitions_folder()
+        if not partitions_folder:
+            self._dialog("Error", "NAND archive folder not found. Please set 'Partitions Folder (NAND)...' in Settings.")
+            return
         
         # --- MODIFIED FOR V1.0.2: Progress Bar for all 7z extractions ---
         for part_info in [("SYSTEM", "SYSTEM.7z"), ("PRODINFOF", "PRODINFOF.7z"), ("SAFE", "SAFE.7z")]:
@@ -3813,9 +3859,6 @@ class SwitchGuiApp(tk.Tk):
         else:
             self._log("\n--- WARNING ---")
             self._log("The Level 1 process will write directly to your Switch's eMMC.")
-
-        if not self._check_disk_space(60):
-            return
         
         # Get NAND source (file or device)
         if not self.offline_mode.get():
@@ -3825,6 +3868,15 @@ class SwitchGuiApp(tk.Tk):
         
         nand_source, source_type = self._get_nand_source()
         if not nand_source:
+            return
+
+        nand_size_gb = self._estimate_nand_size_gb(nand_source, source_type)
+        required_space = self._required_temp_space_gb(nand_size_gb)
+        if nand_size_gb is not None:
+            self._log(f"--- Detected NAND size: {nand_size_gb:.1f}GB. Required temp free space: {required_space}GB.")
+        else:
+            self._log(f"--- Could not determine NAND size. Using default required temp free space: {required_space}GB.")
+        if not self._check_disk_space(required_space):
             return
 
         nx_exe = self.paths['nxnandmanager'].get()
@@ -4030,9 +4082,6 @@ class SwitchGuiApp(tk.Tk):
             self._log("\n--- WARNING ---")
             self._log("The Level 2 process will write directly to your Switch's eMMC.")
 
-        if not self._check_disk_space(60):
-            return
-
         # Get NAND source (file or device)
         if not self.offline_mode.get():
             self._log("\n[STEP 1/7] Please connect your Switch in Hekate's eMMC RAW GPP mode (Read-Only OFF).")
@@ -4043,13 +4092,20 @@ class SwitchGuiApp(tk.Tk):
         if not nand_source:
             return
 
-        nx_exe = self.paths['nxnandmanager'].get()
+        nand_size_gb = self._estimate_nand_size_gb(nand_source, source_type)
+        required_space = self._required_temp_space_gb(nand_size_gb)
+        if nand_size_gb is not None:
+            self._log(f"--- Detected NAND size: {nand_size_gb:.1f}GB. Required temp free space: {required_space}GB.")
+        else:
+            self._log(f"--- Could not determine NAND size. Using default required temp free space: {required_space}GB.")
+        if not self._check_disk_space(required_space):
+            return
 
-        try:
-            script_dir = Path(__file__).parent
-        except NameError:
-            script_dir = Path.cwd()
-        partitions_folder = script_dir / "lib" / "NAND"
+        nx_exe = self.paths['nxnandmanager'].get()
+        partitions_folder = self._get_partitions_folder()
+        if not partitions_folder:
+            self._dialog("Error", "NAND archive folder not found. Please set 'Partitions Folder (NAND)...' in Settings.")
+            return
         keyset_path = self.paths['keys'].get()
 
         self._log(f"\n[STEP 2/7] Acquiring PRODINFO from {source_type}...")
